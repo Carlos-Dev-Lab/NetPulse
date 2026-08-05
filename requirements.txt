@@ -1,0 +1,4 @@
+flet==0.85.3
+flet-desktop==0.85.3
+scapy>=2.5.0
+psutil>=5.9.0

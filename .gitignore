@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.idea/
+*.egg-info/
+.coverage
+htmlcov/
+build/
+dist/
+
+# Datos y configuración generados durante la ejecución
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/settings.json
+exports/
+
+# Capturas locales utilizadas durante la revisión visual
+/full-screen*.png
+/window-medium*.png
+
+# Archivos del sistema y editores
+.DS_Store
+Thumbs.db
+*.log
