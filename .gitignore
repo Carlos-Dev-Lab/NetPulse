@@ -15,6 +15,7 @@ data/*.db-shm
 data/*.db-wal
 data/settings.json
 exports/
+tmp/
 
 # Capturas locales utilizadas durante la revisión visual
 /full-screen*.png

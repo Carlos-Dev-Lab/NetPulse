@@ -4,12 +4,15 @@ import asyncio
 import csv
 import io
 import threading
+import time
 from datetime import datetime
+from pathlib import Path
 from typing import Dict
 
 import flet as ft
 
 from netpulse.domain.state import AppState
+from netpulse.config import PROJECT_ROOT
 from netpulse.infrastructure.database import DB
 from netpulse.infrastructure.nmap_scanner import (
     NmapCancelledError,
@@ -17,8 +20,16 @@ from netpulse.infrastructure.nmap_scanner import (
     SCAN_PROFILES,
     compare_scans,
 )
+from netpulse.domain.comparison import compare_scan_details
+from netpulse.domain.diagnostics import (
+    build_diagnostics, explain_service, findings_for_host, scheduled_scan_message,
+)
+from netpulse.domain.topology import build_topology
+from netpulse.domain.health import calculate_network_health
 from netpulse.infrastructure.sniffer import list_interfaces
 from netpulse.services.ip_info import geo_cache
+from netpulse.services.local_ports import list_local_listeners
+from netpulse.services.reporting import export_scan_reports
 from .charts import BarChartCanvas, LineChartCanvas, PieChartCanvas, SparklineCanvas
 from .i18n import get_language, tr, translate_tree
 from .theme import (
@@ -167,14 +178,16 @@ class DashboardView:
                 card(ft.Column([
                     section_title("🌐  TOP CONNECTIONS"),
                     ft.Divider(color=BORDER, height=6),
-                    ft.Column(ref=self.r_ips, spacing=6,
+                    ft.Column(ref=self.r_ips, spacing=6, expand=True,
+                              scroll=ft.ScrollMode.AUTO,
                               controls=[ft.Text("Waiting...", color=MUTED, size=12)]),
                 ], spacing=10, expand=True)),
 
                 card(ft.Column([
                     section_title("⚡  LIVE PACKET FEED"),
                     ft.Divider(color=BORDER, height=6),
-                    ft.Column(ref=self.r_feed, spacing=4,
+                    ft.Column(ref=self.r_feed, spacing=4, expand=True,
+                              scroll=ft.ScrollMode.AUTO,
                               controls=[ft.Text("Waiting for packets...", color=MUTED, size=12)]),
                 ], spacing=10, expand=True)),
             ], spacing=12, wrap=True, run_spacing=12,
@@ -224,6 +237,10 @@ class DashboardView:
             detail_width = content_width
         for control in self._detail_cards:
             control.width = detail_width
+            # Both operational lists form one visual pair. Their content can
+            # grow independently, so a shared height plus internal scrolling
+            # prevents one card from becoming taller than the other.
+            control.height = max(210.0, min(300.0, content_height * 0.28))
 
         # Use the vertical room left after metrics, system cards, section
         # headings and the detail row. This keeps fullscreen layouts from
@@ -350,10 +367,16 @@ class DashboardView:
 class NetworkView:
     """Active Nmap discovery, risk overview and scan history."""
 
-    def __init__(self, db: DB, scanner: NmapScanner, page_ref):
+    def __init__(self, db: DB, scanner: NmapScanner, page_ref,
+                 state: AppState | None = None, notification_sink=None):
         self.db = db
         self.scanner = scanner
         self._page = page_ref
+        self._state = state
+        self._notification_sink = notification_sink
+        self.r_global_search = ft.Ref[ft.TextField]()
+        self.r_saved_profile = ft.Ref[ft.Dropdown]()
+        self.r_schedule_list = ft.Ref[ft.Column]()
         self.r_target = ft.Ref[ft.TextField]()
         self.r_profile = ft.Ref[ft.Dropdown]()
         self.r_scan = ft.Ref[ft.Button]()
@@ -363,10 +386,22 @@ class NetworkView:
         self.r_ports = ft.Ref[ft.Text]()
         self.r_risk = ft.Ref[ft.Text]()
         self.r_changes = ft.Ref[ft.Text]()
+        self.r_health = ft.Ref[ft.Text]()
+        self.r_health_summary = ft.Ref[ft.Text]()
+        self.r_health_factors = ft.Ref[ft.Column]()
         self.r_device_list = ft.Ref[ft.Column]()
         self.r_alert_list = ft.Ref[ft.Column]()
+        self.r_selected_host = ft.Ref[ft.Text]()
         self.r_history = ft.Ref[ft.Dropdown]()
         self.r_metadata = ft.Ref[ft.Text]()
+        self.r_diagnostic_summary = ft.Ref[ft.Text]()
+        self.r_diagnostic_list = ft.Ref[ft.Column]()
+        self.r_topology = ft.Ref[ft.Column]()
+        self.r_topology_summary = ft.Ref[ft.Text]()
+        self.r_comparison_summary = ft.Ref[ft.Text]()
+        self.r_comparison = ft.Ref[ft.Column]()
+        self.r_local_ports = ft.Ref[ft.Column]()
+        self.r_local_ports_summary = ft.Ref[ft.Text]()
         self._running = False
         self._scan_row = None
         self._summary_row = None
@@ -375,9 +410,21 @@ class NetworkView:
         self._content_cards = []
         self._scan_card = None
         self._history_card = None
+        self._topology_card = None
+        self._comparison_card = None
+        self._search_card = None
+        self._automation_card = None
+        self._health_card = None
+        self._local_ports_card = None
+        self._topology_nodes = []
+        self._topology_grids = []
+        self._viewport_content_width = 1000.0
         self._layout_key = None
         self._disposed = False
         self._cancel_event = threading.Event()
+        self._current_scan = None
+        self._selected_host = ""
+        self._schedule_dispatching = False
 
     @staticmethod
     def _risk_color(level: str) -> str:
@@ -393,6 +440,22 @@ class NetworkView:
                 scan = self.db.get_network_scan(int(e.control.value))
                 if scan:
                     self._render_scan(scan)
+
+        def on_search(e=None):
+            self._show_global_search((self.r_global_search.current.value or "").strip())
+
+        def on_export(e=None):
+            if self._page and self._page[0]:
+                self._page[0].run_task(self._export_current_reports)
+
+        def on_load_profile(e=None):
+            self._load_selected_profile()
+
+        def on_save_profile(e=None):
+            self._show_save_profile_dialog()
+
+        def on_schedule(e=None):
+            self._show_schedule_dialog()
 
         def summary(label, ref, color, icon):
             return card(
@@ -414,7 +477,7 @@ class NetworkView:
             )
 
         profile_options = [
-            ft.DropdownOption(key=key, text=value["label"])
+            ft.DropdownOption(key=key, text=tr(value["label"]))
             for key, value in SCAN_PROFILES.items()
         ]
         self._scan_row = ft.Row([
@@ -452,35 +515,13 @@ class NetworkView:
             summary("OPEN PORTS", self.r_ports, GREEN, ft.Icons.LOCK_OPEN_ROUNDED),
             summary("RISK LEVEL", self.r_risk, AMBER, ft.Icons.SECURITY_ROUNDED),
             summary("CHANGES", self.r_changes, PURPLE, ft.Icons.COMPARE_ARROWS_ROUNDED),
+            summary("NETWORK HEALTH", self.r_health, BLUE, ft.Icons.FAVORITE_ROUNDED),
         ]
         self._summary_row = ft.Row(
             self._summary_cards, spacing=12, wrap=True, run_spacing=12,
             vertical_alignment=ft.CrossAxisAlignment.START,
         )
-        self._content_cards = [
-            card(ft.Column([
-                section_title("DEVICES AND SERVICES"),
-                ft.Divider(color=BORDER, height=6),
-                ft.Column(
-                    ref=self.r_device_list, spacing=8,
-                    controls=[ft.Text("Run a scan to build the inventory.", color=MUTED)],
-                    scroll=ft.ScrollMode.AUTO, expand=True,
-                ),
-            ], spacing=8, expand=True)),
-            card(ft.Column([
-                section_title("ALERTS AND CHANGES"),
-                ft.Divider(color=BORDER, height=6),
-                ft.Column(
-                    ref=self.r_alert_list, spacing=8,
-                    controls=[ft.Text("No alerts.", color=MUTED)],
-                    scroll=ft.ScrollMode.AUTO, expand=True,
-                ),
-            ], spacing=8, expand=True)),
-        ]
-        self._content_row = ft.Row(
-            self._content_cards, spacing=12, wrap=True, run_spacing=12,
-            vertical_alignment=ft.CrossAxisAlignment.START,
-        )
+        self._content_cards = []
 
         self._scan_card = card(ft.Column([
                 ft.Row([
@@ -528,29 +569,192 @@ class NetworkView:
                 ),
                 ft.Text(ref=self.r_status, value="Ready", size=11, color=MUTED),
             ], spacing=12), padding=14)
+        self._search_card = card(ft.Row([
+            ft.Icon(ft.Icons.MANAGE_SEARCH_ROUNDED, color=CYAN, size=22),
+            ft.TextField(
+                ref=self.r_global_search, label="Global search",
+                hint_text="IP, MAC, hostname, process, port or application",
+                expand=True, bgcolor=SURFACE, border_color=BORDER,
+                focused_border_color=CYAN, text_size=11, on_submit=on_search,
+            ),
+            ft.Button(content="SEARCH", icon=ft.Icons.SEARCH_ROUNDED,
+                      on_click=on_search, color=CYAN, bgcolor=tint(CYAN, .13)),
+        ], spacing=9, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=10)
         self._history_card = card(ft.Row([
             ft.Dropdown(
                 ref=self.r_history, label="Scan history", options=[],
                 on_select=on_history, width=300, bgcolor=SURFACE, color=TEXT,
                 border_color=BORDER, focused_border_color=CYAN, text_size=12,
             ),
+            ft.Button(content="EXPORT REPORT", icon=ft.Icons.FILE_DOWNLOAD_ROUNDED,
+                      on_click=on_export, color=GREEN, bgcolor=tint(GREEN, .10)),
             ft.Text(ref=self.r_metadata, value="No scans yet", size=11, color=MUTED),
         ], spacing=12, wrap=True, run_spacing=8), padding=12)
+        self._diagnostic_card = card(ft.ExpansionTile(
+            title=ft.Text("DIAGNOSTIC CENTER", size=11, color=TEXT,
+                          weight=ft.FontWeight.W_700),
+            subtitle=ft.Text(ref=self.r_diagnostic_summary,
+                             value="Run two scans to compare changes.", size=10, color=MUTED),
+            leading=ft.Icon(ft.Icons.HEALTH_AND_SAFETY_ROUNDED, color=CYAN, size=20),
+            controls=[ft.Column(
+                ref=self.r_diagnostic_list,
+                controls=[ft.Text("No diagnostic information yet.", color=MUTED, size=11)],
+                spacing=8,
+            )],
+            controls_padding=ft.padding.Padding.only(left=12, right=12, bottom=12),
+            tile_padding=ft.padding.Padding.symmetric(horizontal=4, vertical=2),
+            text_color=TEXT, icon_color=CYAN, collapsed_text_color=TEXT,
+            collapsed_icon_color=CYAN, maintain_state=True, expanded=True,
+        ), padding=8)
+        self._topology_card = card(ft.ExpansionTile(
+            title=ft.Text("NETWORK MAP", size=11, color=TEXT,
+                          weight=ft.FontWeight.W_700),
+            subtitle=ft.Text(ref=self.r_topology_summary,
+                             value="Segments and connections overview",
+                             size=10, color=MUTED),
+            leading=ft.Icon(ft.Icons.ACCOUNT_TREE_ROUNDED, color=CYAN, size=20),
+            controls=[ft.Column(
+                ref=self.r_topology, spacing=10,
+                controls=[ft.Text("Run a scan to build the network map.", color=MUTED)],
+            )],
+            controls_padding=ft.padding.Padding.only(left=12, right=12, bottom=12),
+            tile_padding=ft.padding.Padding.symmetric(horizontal=4, vertical=2),
+            text_color=TEXT, icon_color=CYAN, collapsed_text_color=TEXT,
+            collapsed_icon_color=CYAN, maintain_state=True, expanded=True,
+        ), padding=8)
+        self._comparison_card = card(ft.ExpansionTile(
+            title=ft.Text("BEFORE VS NOW", size=11, color=TEXT,
+                          weight=ft.FontWeight.W_700),
+            subtitle=ft.Text(ref=self.r_comparison_summary,
+                             value="A previous scan is required for comparison.",
+                             size=10, color=MUTED),
+            leading=ft.Icon(ft.Icons.COMPARE_ARROWS_ROUNDED, color=PURPLE, size=20),
+            controls=[ft.Column(
+                ref=self.r_comparison,
+                controls=[ft.Text("No comparison available.", color=MUTED, size=11)],
+                spacing=8,
+            )],
+            controls_padding=ft.padding.Padding.only(left=12, right=12, bottom=12),
+            tile_padding=ft.padding.Padding.symmetric(horizontal=4, vertical=2),
+            text_color=TEXT, icon_color=PURPLE, collapsed_text_color=TEXT,
+            collapsed_icon_color=PURPLE, maintain_state=True, expanded=False,
+        ), padding=8)
+        self._automation_card = card(ft.ExpansionTile(
+            title=ft.Text("PROFILES AND SCHEDULES", size=11, color=TEXT,
+                          weight=ft.FontWeight.W_700),
+            subtitle=ft.Text("Save network groups and automate recurring scans",
+                             size=10, color=MUTED),
+            leading=ft.Icon(ft.Icons.SCHEDULE_ROUNDED, color=BLUE, size=20),
+            controls=[ft.Column([
+                ft.Row([
+                    ft.Dropdown(
+                        ref=self.r_saved_profile, label="Saved profile", options=[],
+                        width=280, bgcolor=SURFACE, color=TEXT,
+                        border_color=BORDER, focused_border_color=BLUE,
+                    ),
+                    ft.Button(content="LOAD", icon=ft.Icons.UPLOAD_ROUNDED,
+                              on_click=on_load_profile, color=BLUE,
+                              bgcolor=tint(BLUE, .10)),
+                    ft.Button(content="SAVE PROFILE", icon=ft.Icons.BOOKMARK_ADD_ROUNDED,
+                              on_click=on_save_profile, color=CYAN,
+                              bgcolor=tint(CYAN, .10)),
+                    ft.Button(content="SCHEDULE", icon=ft.Icons.ADD_ALARM_ROUNDED,
+                              on_click=on_schedule, color=GREEN,
+                              bgcolor=tint(GREEN, .10)),
+                ], spacing=8, wrap=True, run_spacing=8),
+                ft.Divider(color=BORDER, height=5),
+                ft.Column(
+                    ref=self.r_schedule_list,
+                    controls=[ft.Text("No scheduled scans.", color=MUTED, size=10)],
+                    spacing=6,
+                ),
+            ], spacing=8)],
+            controls_padding=ft.padding.Padding.only(left=12, right=12, bottom=12),
+            tile_padding=ft.padding.Padding.symmetric(horizontal=4, vertical=2),
+            text_color=TEXT, icon_color=BLUE, collapsed_text_color=TEXT,
+            collapsed_icon_color=BLUE, maintain_state=True, expanded=False,
+        ), padding=8)
+        self._health_card = card(ft.ExpansionTile(
+            title=ft.Text("NETWORK HEALTH DETAILS", size=11, color=TEXT,
+                          weight=ft.FontWeight.W_700),
+            subtitle=ft.Text(ref=self.r_health_summary,
+                             value="Run a scan to calculate network health.",
+                             size=10, color=MUTED),
+            leading=ft.Icon(ft.Icons.MONITOR_HEART_ROUNDED, color=BLUE, size=20),
+            controls=[ft.Column(
+                ref=self.r_health_factors,
+                controls=[ft.Text("No health assessment yet.", color=MUTED, size=10)],
+                spacing=7,
+            )],
+            controls_padding=ft.padding.Padding.only(left=12, right=12, bottom=12),
+            tile_padding=ft.padding.Padding.symmetric(horizontal=4, vertical=2),
+            text_color=TEXT, icon_color=BLUE, collapsed_text_color=TEXT,
+            collapsed_icon_color=BLUE, maintain_state=True, expanded=False,
+        ), padding=8)
+        self._local_ports_card = card(ft.ExpansionTile(
+            title=ft.Text("LOCAL PORT INSPECTOR", size=11, color=TEXT,
+                          weight=ft.FontWeight.W_700),
+            subtitle=ft.Text(
+                ref=self.r_local_ports_summary,
+                value="Check which ports are listening on this computer.",
+                size=10, color=MUTED,
+            ),
+            leading=ft.Icon(ft.Icons.PRIVACY_TIP_OUTLINED, color=PURPLE, size=20),
+            controls=[ft.Column([
+                ft.Container(
+                    content=ft.Row([
+                        ft.Icon(ft.Icons.INFO_OUTLINE_ROUNDED, color=BLUE, size=16),
+                        ft.Text(
+                            "A listening port is not automatically dangerous. Review its process and exposure.",
+                            color=MUTED, size=9, expand=True,
+                        ),
+                        ft.Button(
+                            content="REFRESH", icon=ft.Icons.REFRESH_ROUNDED,
+                            color=PURPLE, bgcolor=tint(PURPLE, .10),
+                            on_click=lambda e: self._refresh_local_ports(),
+                        ),
+                    ], spacing=8),
+                    bgcolor=tint(BLUE, .035), border_radius=8, padding=9,
+                ),
+                ft.Column(
+                    ref=self.r_local_ports,
+                    controls=[ft.Text("Press Refresh to inspect local ports.",
+                                      color=MUTED, size=10)],
+                    spacing=6,
+                ),
+            ], spacing=8)],
+            controls_padding=ft.padding.Padding.only(left=12, right=12, bottom=12),
+            tile_padding=ft.padding.Padding.symmetric(horizontal=4, vertical=2),
+            text_color=TEXT, icon_color=PURPLE, collapsed_text_color=TEXT,
+            collapsed_icon_color=PURPLE, maintain_state=True, expanded=False,
+        ), padding=8)
+        self._reload_profiles_and_schedules()
 
         return ft.Column([
             view_heading("Network discovery", "Inventory devices, exposed services and topology changes",
                          ft.Icons.HUB_ROUNDED, CYAN),
+            self._search_card,
             self._scan_card,
 
             self._summary_row,
 
+            self._health_card,
+
             self._history_card,
 
-            self._content_row,
+            self._automation_card,
+
+            self._comparison_card,
+
+            self._diagnostic_card,
+
+            self._topology_card,
+
         ], spacing=12, scroll=ft.ScrollMode.AUTO, expand=True)
 
     def set_viewport(self, width: float, height: float):
         content_width = max(300.0, width - 28.0)
+        self._viewport_content_width = content_width
         content_height = max(420.0, height - 28.0)
         mode = "wide" if content_width >= 760 else "compact" if content_width >= 380 else "narrow"
         key = (mode, round(content_width), round(content_height))
@@ -559,25 +763,25 @@ class NetworkView:
         self._layout_key = key
         self._scan_row.width = content_width
         self._summary_row.width = content_width
-        self._content_row.width = content_width
         self._scan_card.width = content_width
         self._history_card.width = content_width
+        self._diagnostic_card.width = content_width
+        self._topology_card.width = content_width
+        self._comparison_card.width = content_width
+        self._search_card.width = content_width
+        self._automation_card.width = content_width
+        self._health_card.width = content_width
 
-        summary_count = 4 if mode == "wide" else 2 if mode == "compact" else 1
+        summary_count = 5 if mode == "wide" else 2 if mode == "compact" else 1
         summary_width = (content_width - 12 * (summary_count - 1)) / summary_count
         for control in self._summary_cards:
             control.width = summary_width
-        if mode == "wide":
-            self._content_cards[0].width = content_width * 0.60 - 6
-            self._content_cards[1].width = content_width * 0.40 - 6
-            content_card_height = max(220.0, content_height - 410.0)
-            for control in self._content_cards:
-                control.height = content_card_height
-        else:
-            for control in self._content_cards:
-                control.width = content_width
-                control.height = None
-
+        for grid, node_count in self._topology_grids:
+            columns = max(1, round(
+                (content_width - 40.0 + 8.0) /
+                (self._topology_card_width(content_width) + 8.0)
+            ))
+            grid.height = max(156.0, ((node_count + columns - 1) // columns) * 156.0)
         if mode == "narrow":
             self.r_target.current.width = 240
             self.r_profile.current.width = 150
@@ -590,6 +794,283 @@ class NetworkView:
             self.r_target.current.width = 300
             self.r_profile.current.width = 180
             self.r_scan.current.width = 150
+
+    @staticmethod
+    def _topology_card_width(content_width: float) -> float:
+        """Fill the map row with equal cards while keeping them readable."""
+        available = max(230.0, content_width - 48.0)
+        # Flet reports logical pixels after Windows DPI scaling. The node
+        # contents remain readable at 180 px because labels ellipsize and
+        # service badges wrap; using a larger target leaves a full card-sized
+        # strip unused on 125–150% scaled desktop displays.
+        columns = max(1, min(9, int((available + 8.0) // 188.0)))
+        return (available - 8.0 * (columns - 1)) / columns
+
+    def _refresh_local_ports(self):
+        if not self.r_local_ports.current:
+            return
+        listeners = list_local_listeners()
+        exposure_labels = {
+            "local": "This computer only",
+            "all_interfaces": "All network interfaces",
+            "network_interface": "Specific network interface",
+        }
+        controls = []
+        for listener in listeners:
+            color = self._risk_color(listener.risk_level)
+            exposure_color = GREEN if listener.exposure == "local" else AMBER
+            controls.append(ft.Container(
+                content=ft.Row([
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Text(str(listener.port), color=color, size=16,
+                                    weight=ft.FontWeight.W_700,
+                                    font_family="monospace"),
+                            ft.Text(listener.protocol, color=MUTED, size=8,
+                                    weight=ft.FontWeight.W_700),
+                        ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                        width=62, padding=7, bgcolor=tint(color, .07),
+                        border_radius=8,
+                    ),
+                    ft.Column([
+                        ft.Row([
+                            ft.Text(listener.process, color=TEXT, size=10,
+                                    weight=ft.FontWeight.W_700),
+                            ft.Text(f"PID {listener.pid or '-'}", color=MUTED, size=8,
+                                    font_family="monospace"),
+                            ft.Text(listener.service, color=CYAN, size=9),
+                        ], spacing=7, wrap=True),
+                        ft.Text(listener.explanation, color=MUTED, size=9),
+                    ], spacing=3, expand=True),
+                    ft.Column([
+                        ft.Text(tr(listener.risk_level.upper()), color=color, size=8,
+                                weight=ft.FontWeight.W_700),
+                        ft.Text(tr(exposure_labels[listener.exposure]),
+                                color=exposure_color, size=8,
+                                weight=ft.FontWeight.W_600),
+                        ft.Text(f"{listener.address} · {listener.family}", color=MUTED,
+                                size=8, font_family="monospace"),
+                    ], spacing=2, horizontal_alignment=ft.CrossAxisAlignment.END),
+                ], spacing=9),
+                bgcolor=tint(color, .03), border=ft.Border.all(1, tint(color, .14)),
+                border_radius=8, padding=8,
+            ))
+        sensitive = sum(item.risk_level in {"high", "medium"} for item in listeners)
+        exposed = sum(item.exposure != "local" for item in listeners)
+        self.r_local_ports_summary.current.value = tr(
+            f"{len(listeners)} listening ports · {exposed} network-visible · "
+            f"{sensitive} require attention"
+        )
+        self.r_local_ports.current.controls = controls or [ft.Text(
+            "No local listening ports were found, or administrator permission is required.",
+            color=MUTED, size=10,
+        )]
+        translate_tree(self.r_local_ports.current, get_language())
+        self._safe_page_update()
+
+    def _reload_profiles_and_schedules(self):
+        if self.r_saved_profile.current:
+            profiles = self.db.list_scan_profiles()
+            self.r_saved_profile.current.options = [
+                ft.DropdownOption(str(item["id"]), item["name"]) for item in profiles
+            ]
+            valid = {str(item["id"]) for item in profiles}
+            if self.r_saved_profile.current.value not in valid:
+                self.r_saved_profile.current.value = next(iter(valid), None)
+        if not self.r_schedule_list.current:
+            return
+        controls = []
+        for schedule in self.db.list_scan_schedules():
+            next_run = datetime.fromisoformat(schedule["next_run"]).strftime("%Y-%m-%d %H:%M")
+
+            def toggle(e, schedule_id=schedule["id"]):
+                self.db.set_schedule_enabled(schedule_id, bool(e.control.value))
+                self._reload_profiles_and_schedules()
+                self._safe_page_update()
+
+            def remove(e, schedule_id=schedule["id"]):
+                self.db.delete_scan_schedule(schedule_id)
+                self._reload_profiles_and_schedules()
+                self._safe_page_update()
+
+            controls.append(ft.Container(
+                content=ft.Row([
+                    ft.Switch(value=bool(schedule["enabled"]), on_change=toggle,
+                              active_color=GREEN),
+                    ft.Column([
+                        ft.Text(schedule["name"], color=TEXT, size=10,
+                                weight=ft.FontWeight.W_700),
+                        ft.Text(
+                            tr(f"Every {schedule['interval_minutes']} min · {schedule['profile']} · next {next_run}"),
+                            color=MUTED, size=9,
+                        ),
+                    ], spacing=2, expand=True),
+                    ft.Text(tr("CHANGES ONLY" if schedule["notify_changes_only"] else "ALWAYS"),
+                            color=CYAN, size=8, weight=ft.FontWeight.W_700),
+                    ft.IconButton(icon=ft.Icons.DELETE_OUTLINE_ROUNDED, icon_color=RED,
+                                  icon_size=16, tooltip="Delete schedule", on_click=remove),
+                ], spacing=7),
+                bgcolor=SURFACE, border=ft.Border.all(1, BORDER),
+                border_radius=7, padding=7,
+            ))
+        self.r_schedule_list.current.controls = controls or [
+            ft.Text("No scheduled scans.", color=MUTED, size=10)
+        ]
+        translate_tree(self.r_schedule_list.current, get_language())
+
+    def _load_selected_profile(self):
+        value = self.r_saved_profile.current.value if self.r_saved_profile.current else None
+        if not value:
+            return
+        profile = self.db.get_scan_profile(int(value))
+        if not profile:
+            return
+        self.r_target.current.value = profile["target"]
+        self.r_profile.current.value = profile["profile"]
+        self.r_status.current.value = tr(f"Profile loaded: {profile['name']}")
+        self.r_status.current.color = BLUE
+        self._safe_page_update()
+
+    def _show_save_profile_dialog(self):
+        if not self._page or not self._page[0]:
+            return
+        name = ft.TextField(label="Profile name", hint_text="Red administrativa")
+        page = self._page[0]
+
+        def close(e=None):
+            page.pop_dialog()
+
+        def save(e=None):
+            try:
+                target = self.scanner.validate_target(self.r_target.current.value or "")
+                profile = self.r_profile.current.value or "quick"
+                profile_id = self.db.save_scan_profile(name.value or "", target, profile)
+                close()
+                self._reload_profiles_and_schedules()
+                self.r_saved_profile.current.value = str(profile_id)
+                self.r_status.current.value = tr("Scan profile saved.")
+                self.r_status.current.color = GREEN
+                self._safe_page_update()
+            except Exception as exc:
+                name.error_text = str(exc)
+                page.update()
+
+        dialog = ft.AlertDialog(
+            modal=True, title=ft.Text("Save scan profile"), content=name,
+            actions=[ft.TextButton("Cancel", on_click=close),
+                     ft.Button(content="Save profile", on_click=save)],
+        )
+        translate_tree(dialog, get_language())
+        page.show_dialog(dialog)
+
+    def _show_schedule_dialog(self):
+        if not self._page or not self._page[0]:
+            return
+        profile_value = self.r_saved_profile.current.value if self.r_saved_profile.current else None
+        if not profile_value:
+            self.r_status.current.value = tr("Save or select a profile before scheduling.")
+            self.r_status.current.color = AMBER
+            self._safe_page_update()
+            return
+        interval = ft.Dropdown(
+            label="Interval", value="60",
+            options=[ft.DropdownOption(value, tr(label)) for value, label in
+                     (("15", "15 minutes"), ("30", "30 minutes"), ("60", "1 hour"),
+                      ("360", "6 hours"), ("1440", "24 hours"))],
+        )
+        changes_only = ft.Switch(label="Notify only when relevant changes are detected", value=True)
+        page = self._page[0]
+
+        def close(e=None):
+            page.pop_dialog()
+
+        def save(e=None):
+            self.db.save_scan_schedule(
+                int(profile_value), int(interval.value or "60"), bool(changes_only.value)
+            )
+            close()
+            self._reload_profiles_and_schedules()
+            self.r_status.current.value = tr("Scheduled scan created.")
+            self.r_status.current.color = GREEN
+            self._safe_page_update()
+
+        dialog = ft.AlertDialog(
+            modal=True, title=ft.Text("Schedule recurring scan"),
+            content=ft.Column([interval, changes_only], spacing=10, tight=True),
+            actions=[ft.TextButton("Cancel", on_click=close),
+                     ft.Button(content="Create schedule", on_click=save)],
+        )
+        translate_tree(dialog, get_language())
+        page.show_dialog(dialog)
+
+    async def _execute_scan(self, target: str, profile: str):
+        previous = self.db.get_latest_network_scan(target)
+        scan = await asyncio.to_thread(
+            self.scanner.scan, target, profile, self._cancel_event,
+        )
+        scan.findings.extend(compare_scans(previous, scan))
+        self.db.save_network_scan(scan)
+        return previous, scan
+
+    def poll_schedules(self):
+        """Dispatch one due schedule without blocking the real-time UI loop."""
+        if self._running or self._schedule_dispatching or self._disposed:
+            return
+        due = self.db.list_due_schedules()
+        if not due or not self._page or not self._page[0]:
+            return
+        self._schedule_dispatching = True
+        self._page[0].run_task(self._run_scheduled_scan, due[0])
+
+    async def _run_scheduled_scan(self, schedule: dict):
+        self._running = True
+        self._cancel_event = threading.Event()
+        if self.r_scan.current:
+            self.r_scan.current.disabled = True
+            self.r_progress.current.visible = True
+            self.r_status.current.value = tr(f"Scheduled scan: {schedule['name']}...")
+            self.r_status.current.color = BLUE
+            self._safe_page_update()
+        try:
+            previous, scan = await self._execute_scan(schedule["target"], schedule["profile"])
+            self.db.mark_schedule_run(schedule["id"], True)
+            if not self._disposed:
+                self._render_scan(scan)
+                self._reload_history(selected=scan.scan_id)
+                self._reload_profiles_and_schedules()
+                notification = scheduled_scan_message(
+                    scan, bool(schedule["notify_changes_only"]),
+                    [host.address for host in scan.hosts
+                     if previous is None
+                     and (self.db.get_inventory_device(host.address) or {}).get("trust_status") == "new"],
+                )
+                relevant = notification[1] if notification else []
+                if notification and self._notification_sink:
+                    message = notification[0]
+                    self._notification_sink(f"Scheduled scan · {schedule['name']}", message)
+                self.r_status.current.value = tr(
+                    f"Scheduled scan completed · {len(scan.hosts)} devices · {len(relevant)} relevant changes"
+                )
+                self.r_status.current.color = GREEN
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            self.db.mark_schedule_run(schedule["id"], False, str(exc))
+            self._reload_profiles_and_schedules()
+            if self._notification_sink:
+                self._notification_sink(
+                    f"Scheduled scan failed · {schedule['name']}", str(exc)
+                )
+            if self.r_status.current:
+                self.r_status.current.value = str(exc)
+                self.r_status.current.color = RED
+        finally:
+            self._running = False
+            self._schedule_dispatching = False
+            if not self._disposed and self.r_scan.current:
+                self.r_scan.current.disabled = False
+                self.r_progress.current.visible = False
+                self._safe_page_update()
 
     async def _run_scan(self):
         if self._running or self._disposed:
@@ -606,17 +1087,9 @@ class NetworkView:
             self._running = False
             return
         try:
-            previous = self.db.get_latest_network_scan(target)
-            scan = await asyncio.to_thread(
-                self.scanner.scan,
-                target,
-                profile,
-                self._cancel_event,
-            )
+            previous, scan = await self._execute_scan(target, profile)
             if self._disposed:
                 return
-            scan.findings.extend(compare_scans(previous, scan))
-            self.db.save_network_scan(scan)
             self._render_scan(scan)
             self._reload_history(selected=scan.scan_id)
             self.r_status.current.value = tr(
@@ -663,10 +1136,20 @@ class NetworkView:
         self.scanner.cancel()
 
     def _render_scan(self, scan):
+        self._current_scan = scan
+        self._selected_host = ""
         self.r_devices.current.value = str(len(scan.hosts))
         self.r_ports.current.value = str(scan.open_port_count)
-        self.r_risk.current.value = scan.risk_level.upper()
+        self.r_risk.current.value = tr(scan.risk_level.upper())
         self.r_risk.current.color = self._risk_color(scan.risk_level)
+        previous = self.db.get_latest_network_scan(
+            scan.target, before_id=scan.scan_id
+        ) if scan.scan_id else None
+        self._previous_scan = previous
+        self._render_diagnostics(previous, scan)
+        self._render_comparison(previous, scan)
+        self._render_topology(scan)
+        self._render_health(scan)
         changes = sum(1 for finding in scan.findings if finding.kind != "exposed_service")
         self.r_changes.current.value = str(changes)
         self.r_metadata.current.value = (
@@ -688,6 +1171,9 @@ class NetworkView:
                     bgcolor=tint(service_color, .09), border_radius=6,
                     border=ft.Border.all(1, tint(service_color, .21)),
                     padding=ft.padding.Padding.symmetric(horizontal=8, vertical=4),
+                    ink=True, tooltip="Explain risk and verification",
+                    on_click=lambda e, address=host.address, item=service:
+                        self._show_service_explanation(address, item),
                 ))
             if not service_controls:
                 service_controls = [ft.Text("No open ports in this scan profile", size=10, color=MUTED)]
@@ -704,43 +1190,743 @@ class NetworkView:
                         ft.Container(expand=True),
                         ft.Text(f"{host.risk_level.upper()} {host.risk_score}",
                                 color=color, size=10, weight=ft.FontWeight.W_700),
+                        ft.IconButton(
+                            icon=ft.Icons.EDIT_NOTE_ROUNDED, icon_color=CYAN,
+                            icon_size=17, tooltip="Edit device inventory",
+                            on_click=lambda e, address=host.address: self._edit_inventory(address),
+                        ),
                     ], spacing=8),
                     ft.Text(subtitle, size=10, color=DIM,
                             overflow=ft.TextOverflow.ELLIPSIS),
                     ft.Row(service_controls, spacing=6, wrap=True, run_spacing=6),
                 ], spacing=6),
                 bgcolor=SURFACE, border=ft.Border.all(1, tint(color, .21)),
+                border_radius=10, padding=10, ink=True,
+                data=host.address, tooltip=f"View alerts for {host.address}",
+                on_click=lambda e: self._select_host(e.control.data),
+            ))
+        if self.r_device_list.current:
+            self.r_device_list.current.controls = device_controls or [
+                ft.Text("No responding devices were found.", color=MUTED)
+            ]
+
+        if self.r_device_list.current:
+            translate_tree(self.r_device_list.current, get_language())
+
+    def _render_health(self, scan):
+        health = calculate_network_health(scan, self.db.list_inventory())
+        color = GREEN if health.score >= 90 else BLUE if health.score >= 75 else AMBER if health.score >= 60 else RED
+        self.r_health.current.value = f"{health.score}/100"
+        self.r_health.current.color = color
+        self.r_health_summary.current.value = tr(
+            f"{health.score}/100 · {tr(health.level.upper())} · "
+            f"{health.total_deduction} points deducted"
+        )
+        controls = []
+        for factor in health.factors:
+            factor_color = self._risk_color(factor.severity)
+            controls.append(ft.Container(
+                content=ft.Row([
+                    ft.Container(
+                        content=ft.Text(f"-{factor.deduction}", color=factor_color,
+                                        size=12, weight=ft.FontWeight.W_700),
+                        width=48, alignment=ft.Alignment.CENTER,
+                    ),
+                    ft.Column([
+                        ft.Text(tr(factor.label), color=TEXT, size=10,
+                                weight=ft.FontWeight.W_700),
+                        ft.Text(tr(factor.explanation), color=MUTED, size=9),
+                    ], spacing=2, expand=True),
+                ], spacing=8),
+                bgcolor=tint(factor_color, .035),
+                border=ft.Border.all(1, tint(factor_color, .14)),
+                border_radius=7, padding=8,
+            ))
+        self.r_health_factors.current.controls = controls or [
+            ft.Container(
+                content=ft.Row([
+                    ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, color=GREEN, size=18),
+                    ft.Text("No deductions. The scanned network is healthy according to current evidence.",
+                            color=GREEN, size=10),
+                ], spacing=7),
+                bgcolor=tint(GREEN, .04), border_radius=7, padding=8,
+            )
+        ]
+        translate_tree(self.r_health_factors.current, get_language())
+
+    def _render_comparison(self, previous, current):
+        comparison = compare_scan_details(previous, current)
+        if not comparison.has_baseline:
+            self.r_comparison_summary.current.value = tr("A previous scan is required for comparison.")
+            self.r_comparison.current.controls = [
+                ft.Text("Run the same target again to create a before-and-now comparison.",
+                        color=MUTED, size=11)
+            ]
+            return
+        delta_symbol = "+" if comparison.risk_delta > 0 else ""
+        self.r_comparison_summary.current.value = tr(
+            f"#{comparison.previous_id or '-'} → #{comparison.current_id or '-'} · "
+            f"{comparison.total_changes} changes · risk {delta_symbol}{comparison.risk_delta}"
+        )
+
+        def metric(title, before, now, color):
+            return ft.Container(
+                content=ft.Column([
+                    ft.Text(title, size=9, color=MUTED, weight=ft.FontWeight.W_600),
+                    ft.Row([
+                        ft.Text(str(before), size=18, color=DIM, weight=ft.FontWeight.W_700),
+                        ft.Icon(ft.Icons.ARROW_FORWARD_ROUNDED, size=15, color=color),
+                        ft.Text(str(now), size=18, color=color, weight=ft.FontWeight.W_700),
+                    ], spacing=7),
+                ], spacing=3),
+                bgcolor=SURFACE, border=ft.Border.all(1, tint(color, .18)),
+                border_radius=8, padding=9, width=180,
+            )
+
+        details = []
+        for address in comparison.new_devices:
+            details.append(("NEW DEVICE", address, "Detected now", AMBER))
+        for address in comparison.missing_devices:
+            details.append(("MISSING DEVICE", address, "No longer responds", MUTED))
+        for change in comparison.address_changes:
+            details.append(("IP CHANGED", change.current_address,
+                            f"{change.previous_address} → {change.current_address} · {change.mac}", BLUE))
+        for change in comparison.port_changes:
+            color = GREEN if change.change == "closed" else self._risk_color(change.severity)
+            details.append((f"PORT {change.change.upper()}", change.address,
+                            f"{change.port}/{change.protocol} · {change.service}", color))
+
+        change_controls = [ft.Container(
+            content=ft.Row([
+                ft.Text(tr(kind), color=color, size=9, weight=ft.FontWeight.W_700, width=105),
+                ft.Text(address, color=TEXT, size=10, font_family="monospace", width=125),
+                ft.Text(tr(detail), color=MUTED, size=10, expand=True),
+            ], spacing=7),
+            bgcolor=tint(color, .035), border_radius=6,
+            border=ft.Border.all(1, tint(color, .13)), padding=7,
+        ) for kind, address, detail, color in details]
+        self.r_comparison.current.controls = [
+            ft.Row([
+                metric("DEVICES", comparison.previous_hosts, comparison.current_hosts, CYAN),
+                metric("OPEN PORTS", comparison.previous_ports, comparison.current_ports, GREEN),
+                metric("RISK SCORE", comparison.previous_risk, comparison.current_risk,
+                       RED if comparison.risk_delta > 0 else GREEN),
+            ], spacing=8, wrap=True, run_spacing=8),
+            ft.Column(change_controls or [
+                ft.Text("No topology or port changes detected.", color=GREEN, size=11)
+            ], spacing=6),
+        ]
+        translate_tree(self.r_comparison.current, get_language())
+
+    def _show_service_explanation(self, address, service):
+        if not self._page or not self._page[0]:
+            return
+        explanation = explain_service(address, service)
+        color = self._risk_color(explanation.risk)
+        page = self._page[0]
+
+        def close(e=None):
+            page.pop_dialog()
+
+        page.dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Row([
+                ft.Icon(ft.Icons.SECURITY_ROUNDED, color=color),
+                ft.Text(explanation.title, color=TEXT, size=15,
+                        weight=ft.FontWeight.W_700),
+            ]),
+            content=ft.Container(content=ft.Column([
+                ft.Text(f"Device: {address}", color=CYAN, size=11, font_family="monospace"),
+                ft.Text("WHY IT MATTERS", color=MUTED, size=9, weight=ft.FontWeight.W_700),
+                ft.Text(explanation.why, color=TEXT, size=11),
+                ft.Text("RECOMMENDED ACTION", color=MUTED, size=9, weight=ft.FontWeight.W_700),
+                ft.Text(explanation.recommendation, color=color, size=11),
+                ft.Text("SAFE VERIFICATION", color=MUTED, size=9, weight=ft.FontWeight.W_700),
+                ft.Container(
+                    content=ft.Text(explanation.verification, color=CYAN, size=11,
+                                    font_family="monospace", selectable=True),
+                    bgcolor=SURFACE, border_radius=6, padding=8,
+                ),
+                ft.Text("Run verification only on networks you are authorized to assess.",
+                        color=AMBER, size=9),
+            ], spacing=8), width=520),
+            actions=[ft.TextButton("Close", on_click=close)],
+        )
+        translate_tree(page.dialog, get_language())
+        page.dialog.open = True
+        page.update()
+
+    def _show_global_search(self, query: str):
+        if not query or not self._page or not self._page[0]:
+            return
+        results = self.db.search_global(query)
+        if self._state:
+            needle = query.lower()
+            for process, metrics in self._state.proc_traffic.items():
+                if needle in process.lower():
+                    results.append({
+                        "category": "process", "label": process, "value": process,
+                        "detail": f"{metrics.get('b', 0):,} bytes · {metrics.get('p', 0):,} packets",
+                    })
+        category_colors = {
+            "inventory": CYAN, "service": AMBER, "traffic": PURPLE, "process": GREEN,
+        }
+        controls = []
+        for result in results[:50]:
+            color = category_colors.get(result["category"], MUTED)
+            controls.append(ft.Container(
+                content=ft.Row([
+                    ft.Text(result["category"].upper(), color=color, size=8,
+                            weight=ft.FontWeight.W_700, width=70),
+                    ft.Column([
+                        ft.Text(result["label"], color=TEXT, size=11,
+                                weight=ft.FontWeight.W_600),
+                        ft.Text(result["detail"] or result["value"], color=MUTED, size=9),
+                    ], spacing=2, expand=True),
+                    ft.Text(result["value"], color=CYAN, size=9, font_family="monospace"),
+                ], spacing=8),
+                bgcolor=tint(color, .035), border=ft.Border.all(1, tint(color, .13)),
+                border_radius=7, padding=8,
+            ))
+        page = self._page[0]
+
+        def close(e=None):
+            page.pop_dialog()
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(f"Global search · {query}"),
+            content=ft.Container(
+                content=ft.Column(controls or [ft.Text("No matching results.", color=MUTED)],
+                                  spacing=6, scroll=ft.ScrollMode.AUTO),
+                width=650, height=min(520, max(120, 72 * max(1, len(controls)))),
+            ),
+            actions=[ft.TextButton("Close", on_click=close)],
+        )
+        translate_tree(dialog, get_language())
+        page.show_dialog(dialog)
+
+    async def _export_current_reports(self):
+        if not self._current_scan or not self._page or not self._page[0]:
+            if self.r_status.current:
+                self.r_status.current.value = tr("Select a scan before exporting.")
+                self.r_status.current.color = AMBER
+                self._safe_page_update()
+            return
+        scan = self._current_scan
+        previous = self.db.get_latest_network_scan(
+            scan.target, before_id=scan.scan_id
+        ) if scan.scan_id else None
+        try:
+            self.r_status.current.value = tr("Generating PDF, HTML and CSV reports...")
+            self.r_status.current.color = CYAN
+            self._safe_page_update()
+            paths = await asyncio.to_thread(
+                export_scan_reports, scan, previous, self.db.list_inventory(),
+                PROJECT_ROOT / "exports",
+            )
+            self.r_status.current.value = tr("Reports exported to exports folder.")
+            self.r_status.current.color = GREEN
+            page = self._page[0]
+
+            def close(e=None):
+                page.dialog.open = False
+                page.update()
+
+            page.dialog = ft.AlertDialog(
+                title=ft.Text("Reports exported"),
+                content=ft.Column([
+                    ft.Text(f"{kind.upper()}: {path}", selectable=True, size=10,
+                            color=CYAN if kind == "pdf" else TEXT)
+                    for kind, path in paths.items()
+                ], spacing=7, tight=True),
+                actions=[ft.TextButton("Close", on_click=close)],
+            )
+            translate_tree(page.dialog, get_language())
+            page.dialog.open = True
+            page.update()
+        except Exception as exc:
+            self.r_status.current.value = f"Report export failed: {exc}"
+            self.r_status.current.color = RED
+            self._safe_page_update()
+
+    def _render_topology(self, scan):
+        inventory = self.db.list_inventory()
+        hosts_by_address = {host.address: host for host in scan.hosts}
+        local_addresses = {
+            item.get("ip", "") for item in list_interfaces() if item.get("ip")
+        }
+        segments = build_topology(scan, inventory, local_addresses)
+        trust_colors = {"authorized": GREEN, "known": BLUE, "blocked": RED, "new": AMBER}
+        role_icons = {
+            "router": ft.Icons.ROUTER_ROUNDED,
+            "local": ft.Icons.COMPUTER_ROUNDED,
+            "device": ft.Icons.DEVICES_OTHER_ROUNDED,
+        }
+        controls = []
+        self._topology_nodes = []
+        self._topology_grids = []
+        total_nodes = sum(len(segment.nodes) for segment in segments)
+        self.r_topology_summary.current.value = tr(
+            f"{len(segments)} segments · {total_nodes} nodes · select a node to filter alerts"
+        )
+        for segment in segments:
+            nodes = []
+            for node in segment.nodes:
+                host = hosts_by_address[node.address]
+                risk_color = self._risk_color(node.risk_level)
+                trust_color = trust_colors.get(node.trust_status, MUTED)
+                service_controls = []
+                visible_services = host.open_ports[:3]
+                for service in visible_services:
+                    service_color = self._risk_color(service.risk_level)
+                    service_controls.append(ft.Container(
+                        content=ft.Text(
+                            f"{service.port}/{service.protocol} {service.name}",
+                            color=service_color, size=8,
+                        ),
+                        bgcolor=tint(service_color, .08),
+                        border=ft.Border.all(1, tint(service_color, .18)),
+                        border_radius=5,
+                        padding=ft.padding.Padding.symmetric(horizontal=5, vertical=2),
+                        ink=True, tooltip=tr("Explain risk and verification"),
+                        on_click=lambda e, address=node.address, item=service:
+                            self._show_service_explanation(address, item),
+                    ))
+                hidden_service_count = len(host.open_ports) - len(visible_services)
+                if hidden_service_count:
+                    service_controls.append(ft.Container(
+                        content=ft.Text(tr(f"+{hidden_service_count} more"),
+                                        color=CYAN, size=8,
+                                        weight=ft.FontWeight.W_700),
+                        bgcolor=tint(CYAN, .07),
+                        border=ft.Border.all(1, tint(CYAN, .16)),
+                        border_radius=5,
+                        padding=ft.padding.Padding.symmetric(horizontal=5, vertical=2),
+                        tooltip=tr("Open the device to view all services"),
+                    ))
+                if not service_controls:
+                    service_controls = [ft.Text(
+                        tr("No open ports in this scan profile"), color=MUTED, size=8
+                    )]
+                node_card = ft.Container(
+                    content=ft.Column([
+                        ft.Row([
+                            ft.Icon(role_icons[node.role], color=risk_color, size=20),
+                            ft.Column([
+                                ft.Text(node.label, color=TEXT, size=10,
+                                        weight=ft.FontWeight.W_700,
+                                        overflow=ft.TextOverflow.ELLIPSIS),
+                                ft.Text(node.address, color=CYAN, size=8,
+                                        font_family="monospace"),
+                            ], spacing=1, expand=True),
+                            ft.Container(width=8, height=8, bgcolor=trust_color,
+                                         border_radius=4,
+                                         tooltip=tr(node.trust_status.upper())),
+                            ft.IconButton(
+                                icon=ft.Icons.EDIT_NOTE_ROUNDED, icon_color=CYAN,
+                                icon_size=15, tooltip=tr("Edit device inventory"),
+                                on_click=lambda e, address=node.address:
+                                    self._edit_inventory(address),
+                            ),
+                        ], spacing=5),
+                        ft.Row([
+                            ft.Text(tr(node.risk_level.upper()), color=risk_color,
+                                    size=8, weight=ft.FontWeight.W_700),
+                            ft.Text(f"{host.risk_score}/100", color=risk_color, size=8),
+                            ft.Text(tr(node.trust_status.upper()), color=trust_color,
+                                    size=8, weight=ft.FontWeight.W_700),
+                        ], spacing=6),
+                        ft.Container(
+                            content=ft.Row(service_controls, spacing=4, wrap=True,
+                                           run_spacing=4),
+                            height=42,
+                            alignment=ft.Alignment.TOP_LEFT,
+                        ),
+                    ], spacing=5, alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                    padding=8, border_radius=9, ink=True,
+                    bgcolor=tint(risk_color, .045),
+                    border=ft.Border.all(1, tint(risk_color, .28)),
+                    data=node.address,
+                    tooltip=tr(f"{node.address} · {node.role} · {node.risk_level} risk"),
+                    on_click=lambda e: self._select_host(e.control.data),
+                )
+                nodes.append(node_card)
+                self._topology_nodes.append(node_card)
+            columns = max(1, round(
+                (self._viewport_content_width - 40.0 + 8.0) /
+                (self._topology_card_width(self._viewport_content_width) + 8.0)
+            ))
+            node_grid = ft.GridView(
+                controls=nodes,
+                max_extent=210,
+                spacing=8,
+                run_spacing=8,
+                child_aspect_ratio=1.35,
+                height=max(156.0, ((len(nodes) + columns - 1) // columns) * 156.0),
+                build_controls_on_demand=False,
+            )
+            self._topology_grids.append((node_grid, len(nodes)))
+            controls.append(ft.Container(
+                content=ft.Column([
+                    ft.Row([
+                        ft.Icon(ft.Icons.ACCOUNT_TREE_ROUNDED, color=CYAN, size=17),
+                        ft.Text(segment.network, color=TEXT, size=11,
+                                weight=ft.FontWeight.W_700, font_family="monospace"),
+                        ft.Container(expand=True),
+                        ft.Text(tr(f"{len(nodes)} devices"), color=MUTED, size=9),
+                    ], spacing=7),
+                    ft.Container(height=2, bgcolor=tint(CYAN, .28), border_radius=2),
+                    node_grid,
+                ], spacing=7),
+                bgcolor=SURFACE, border=ft.Border.all(1, BORDER),
                 border_radius=10, padding=10,
             ))
-        self.r_device_list.current.controls = device_controls or [
+        self.r_topology.current.controls = controls or [
             ft.Text("No responding devices were found.", color=MUTED)
         ]
+        translate_tree(self.r_topology.current, get_language())
 
+    def _edit_inventory(self, address: str):
+        device = self.db.get_inventory_device(address)
+        if not device or not self._page or not self._page[0]:
+            return
+        ip_history = self.db.list_device_ip_history(address)
+        previous_addresses = [item["address"] for item in ip_history
+                              if item["address"] != address]
+        def styled_field(label, value, icon, **kwargs):
+            return ft.TextField(
+                label=label, value=value, prefix_icon=icon,
+                color=TEXT, cursor_color=CYAN,
+                label_style=ft.TextStyle(color=MUTED, size=10),
+                filled=True, fill_color=tint(CYAN, .035),
+                border_color=BORDER, focused_border_color=CYAN,
+                focused_border_width=1.5, border_radius=9,
+                content_padding=ft.padding.Padding.symmetric(horizontal=12, vertical=10),
+                **kwargs,
+            )
+
+        alias = styled_field("Custom name", device.get("alias") or "",
+                             ft.Icons.BADGE_OUTLINED)
+        device_type = styled_field("Device type", device.get("device_type") or "unknown",
+                                   ft.Icons.DEVICES_OTHER_ROUNDED)
+        owner = styled_field("Owner", device.get("owner") or "",
+                             ft.Icons.PERSON_OUTLINE_ROUNDED)
+        location = styled_field("Location", device.get("location") or "",
+                                ft.Icons.LOCATION_ON_OUTLINED)
+        notes = styled_field("Notes", device.get("notes") or "",
+                             ft.Icons.NOTES_ROUNDED, multiline=True,
+                             min_lines=2, max_lines=4)
+        trust = ft.Dropdown(
+            label="Trust status", value=device.get("trust_status") or "new",
+            options=[ft.DropdownOption(value, tr(value.upper())) for value in
+                     ("new", "known", "authorized", "blocked")],
+            leading_icon=ft.Icons.VERIFIED_USER_OUTLINED,
+            color=TEXT, label_style=ft.TextStyle(color=MUTED, size=10),
+            filled=True, fill_color=tint(CYAN, .035), bgcolor=tint(CYAN, .035),
+            border_color=BORDER, focused_border_color=CYAN,
+            focused_border_width=1.5, border_radius=9,
+            content_padding=ft.padding.Padding.symmetric(horizontal=12, vertical=10),
+        )
+        page = self._page[0]
+
+        def close(e=None):
+            page.pop_dialog()
+            page.update()
+
+        def save(e=None):
+            self.db.update_inventory_device(
+                address, alias=alias.value or "", device_type=device_type.value or "unknown",
+                owner=owner.value or "", location=location.value or "",
+                notes=notes.value or "", trust_status=trust.value or "new",
+            )
+            close()
+            if self._current_scan:
+                self._render_scan(self._current_scan)
+                self._safe_page_update()
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Row([
+                ft.Container(
+                    content=ft.Icon(ft.Icons.EDIT_NOTE_ROUNDED, color=CYAN, size=22),
+                    bgcolor=tint(CYAN, .09), border_radius=10, padding=8,
+                ),
+                ft.Column([
+                    ft.Text("EDIT DEVICE INVENTORY", color=TEXT, size=13,
+                            weight=ft.FontWeight.W_700),
+                    ft.Text(address, color=CYAN, size=10, font_family="monospace"),
+                ], spacing=1),
+            ], spacing=10),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Icon(ft.Icons.SWAP_HORIZ_ROUNDED, color=CYAN, size=17),
+                            ft.Column([
+                                ft.Text("CURRENT IP", color=MUTED, size=8,
+                                        weight=ft.FontWeight.W_700),
+                                ft.Text(address, color=CYAN, size=10,
+                                        font_family="monospace"),
+                                ft.Text(
+                                    tr("Previous IPs: ") + ", ".join(previous_addresses),
+                                    color=MUTED, size=9, font_family="monospace",
+                                    visible=bool(previous_addresses),
+                                ),
+                            ], spacing=2),
+                        ], spacing=8),
+                        bgcolor=tint(CYAN, .04), border=ft.Border.all(1, tint(CYAN, .14)),
+                        border_radius=8, padding=9,
+                    ),
+                    ft.Text("Identification and responsibility", color=MUTED, size=9,
+                            weight=ft.FontWeight.W_700),
+                    alias, device_type, owner, location,
+                    ft.Text("Classification and notes", color=MUTED, size=9,
+                            weight=ft.FontWeight.W_700),
+                    trust, notes,
+                ], spacing=10, scroll=ft.ScrollMode.AUTO),
+                width=500, height=500,
+            ),
+            actions=[ft.TextButton("Cancel", on_click=close),
+                     ft.Button(content="Save device", icon=ft.Icons.SAVE_ROUNDED,
+                               color=CYAN, bgcolor=tint(CYAN, .12), on_click=save)],
+            bgcolor=SURFACE, barrier_color="#66000000", elevation=18,
+            shape=ft.RoundedRectangleBorder(radius=14),
+            actions_padding=ft.padding.Padding.only(left=18, right=18, bottom=14),
+        )
+        translate_tree(dialog, get_language())
+        page.show_dialog(dialog)
+
+    def _select_host(self, address: str):
+        if not self._current_scan or not address:
+            return
+        self._selected_host = address
+        self._show_host_alerts_dialog(address)
+
+    def _host_alert_controls(self, address: str):
         alert_controls = []
         severity_order = {"high": 0, "medium": 1, "low": 2}
         for finding in sorted(
-            scan.findings, key=lambda item: severity_order.get(item.severity, 3)
+            findings_for_host(self._current_scan, address),
+            key=lambda item: severity_order.get(item.severity, 3)
         ):
             color = self._risk_color(finding.severity)
             alert_controls.append(ft.Container(
                 content=ft.Column([
                     ft.Row([
                         ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, color=color, size=15),
-                        ft.Text(finding.title, color=TEXT, size=11,
+                        ft.Text(tr(finding.title), color=TEXT, size=11,
                                 weight=ft.FontWeight.W_600, expand=True),
                         ft.Text(finding.host, color=color, size=9,
                                 font_family="monospace"),
                     ], spacing=6),
-                    ft.Text(finding.detail, size=10, color=MUTED),
+                    ft.Text(tr(finding.detail), size=10, color=MUTED),
                 ], spacing=4),
                 bgcolor=tint(color, .06), border=ft.Border.all(1, tint(color, .19)),
                 border_radius=8, padding=9,
             ))
-        self.r_alert_list.current.controls = alert_controls or [
-            ft.Text("No relevant changes or exposed high-risk services.", color=GREEN, size=11)
+        return alert_controls or [
+            ft.Text("No alerts or changes for this device.", color=GREEN, size=11)
         ]
-        translate_tree(self.r_device_list.current, get_language())
+
+    def _show_host_alerts_dialog(self, address: str):
+        if not self._page or not self._page[0]:
+            return
+        page = self._page[0]
+
+        def close(_=None):
+            page.pop_dialog()
+
+        host = next((item for item in self._current_scan.hosts
+                     if item.address == address), None)
+        inventory = self.db.get_inventory_device(address) or {}
+        diagnostics = [
+            item for item in build_diagnostics(
+                getattr(self, "_previous_scan", None), self._current_scan
+            ).items if item.host == address
+        ]
+        risk_color = self._risk_color(host.risk_level if host else "low")
+        identity = ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    ft.Text(inventory.get("alias") or (host.hostname if host else "")
+                            or "Unidentified device", color=TEXT, size=12,
+                            weight=ft.FontWeight.W_700, expand=True),
+                    ft.Text(tr((inventory.get("trust_status") or "new").upper()),
+                            color=CYAN, size=9, weight=ft.FontWeight.W_700),
+                ]),
+                ft.Text(" | ".join(filter(None, [
+                    host.mac if host else "", host.vendor if host else "",
+                    host.os_name if host else "", inventory.get("location") or "",
+                ])) or tr("No additional inventory data."), color=MUTED, size=9),
+                ft.Row([
+                    ft.Text(tr("RISK LEVEL"), color=MUTED, size=9),
+                    ft.Text(tr((host.risk_level if host else "low").upper()),
+                            color=risk_color, size=10, weight=ft.FontWeight.W_700),
+                    ft.Text(f"{host.risk_score if host else 0}/100",
+                            color=risk_color, size=10),
+                ], spacing=7),
+            ], spacing=5),
+            bgcolor=tint(CYAN, .04), border=ft.Border.all(1, tint(CYAN, .16)),
+            border_radius=8, padding=10,
+        )
+        services = []
+        for service in (host.open_ports if host else []):
+            color = self._risk_color(service.risk_level)
+            services.append(ft.Container(
+                content=ft.Column([
+                    ft.Text(f"{service.port}/{service.protocol} · {service.name}",
+                            color=color, size=10, weight=ft.FontWeight.W_700),
+                    ft.Text(service.fingerprint or service.risk_reason or
+                            tr("No additional service details."), color=MUTED, size=9),
+                ], spacing=2),
+                bgcolor=tint(color, .045), border=ft.Border.all(1, tint(color, .16)),
+                border_radius=7, padding=8,
+            ))
+        diagnostic_controls = []
+        for item in diagnostics:
+            resolved = item.status == "resolved"
+            color = GREEN if resolved else self._risk_color(item.severity)
+            diagnostic_controls.append(ft.Container(
+                content=ft.Column([
+                    ft.Row([
+                        ft.Text(tr(item.title), color=TEXT, size=10,
+                                weight=ft.FontWeight.W_700, expand=True),
+                        ft.Text(tr("RESOLVED" if resolved else item.severity.upper()),
+                                color=color, size=9, weight=ft.FontWeight.W_700),
+                    ]),
+                    ft.Text(tr("Why: " + item.why), color=MUTED, size=9),
+                    ft.Text(tr("Recommended action: " + item.recommendation),
+                            color=color, size=9),
+                    ft.Text(tr("Evidence: " + item.evidence), color=DIM, size=8,
+                            visible=bool(item.evidence)),
+                ], spacing=4),
+                bgcolor=tint(color, .045), border=ft.Border.all(1, tint(color, .16)),
+                border_radius=8, padding=9,
+            ))
+        details = ft.Column([
+            identity,
+            ft.Text("OPEN PORTS AND SERVICES", color=MUTED, size=9,
+                    weight=ft.FontWeight.W_700),
+            *(services or [ft.Text("No open ports in this scan profile",
+                                   color=GREEN, size=10)]),
+            ft.Text("DIAGNOSIS AND RECOMMENDATIONS", color=MUTED, size=9,
+                    weight=ft.FontWeight.W_700),
+            *(diagnostic_controls or [ft.Text(
+                "No alerts or changes for this device.", color=GREEN, size=10
+            )]),
+        ], spacing=8, scroll=ft.ScrollMode.AUTO)
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Row([
+                ft.Icon(ft.Icons.NOTIFICATIONS_ACTIVE_ROUNDED, color=AMBER, size=22),
+                ft.Column([
+                    ft.Text("ALERTS AND CHANGES", color=TEXT, size=13,
+                            weight=ft.FontWeight.W_700),
+                    ft.Text(address, color=CYAN, size=10, font_family="monospace"),
+                ], spacing=1),
+            ], spacing=9),
+            content=ft.Container(
+                content=details,
+                width=560,
+                height=420,
+                padding=ft.padding.Padding.only(top=4),
+            ),
+            actions=[ft.TextButton("Close", on_click=close)],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        translate_tree(dialog, get_language())
+        page.show_dialog(dialog)
+
+    def _render_host_alerts(self, address: str):
+        """Refreshes the legacy alert target when it is mounted."""
+        if not self.r_alert_list.current:
+            return
+        self.r_alert_list.current.controls = self._host_alert_controls(address)
         translate_tree(self.r_alert_list.current, get_language())
+
+    def _render_diagnostics(self, previous, scan):
+        summary = build_diagnostics(previous, scan)
+        priority = summary.priority
+        if priority:
+            self.r_diagnostic_summary.current.value = (
+                f"Priority: {priority.title} · {summary.active_issues} active · "
+                f"{summary.resolved_issues} resolved"
+            )
+        elif summary.resolved_issues:
+            self.r_diagnostic_summary.current.value = (
+                f"No active issues · {summary.resolved_issues} resolved"
+            )
+        else:
+            self.r_diagnostic_summary.current.value = "No relevant changes detected."
+
+        group_specs = [
+            ("CRITICAL ISSUES", "high", "active", RED, ft.Icons.ERROR_OUTLINE_ROUNDED),
+            ("REQUIRES ATTENTION", "medium", "active", AMBER, ft.Icons.WARNING_AMBER_ROUNDED),
+            ("INFORMATIONAL", "low", "active", BLUE, ft.Icons.INFO_OUTLINE_ROUNDED),
+            ("RESOLVED ISSUES", None, "resolved", GREEN, ft.Icons.CHECK_CIRCLE_OUTLINE_ROUNDED),
+        ]
+        controls = []
+        for label, severity, status, color, icon in group_specs:
+            items = [item for item in summary.items
+                     if item.status == status and (severity is None or item.severity == severity)]
+            if not items:
+                continue
+            hosts = []
+            for address in dict.fromkeys(item.host for item in items):
+                host_items = [item for item in items if item.host == address]
+                previews = [ft.Container(
+                    content=ft.Row([
+                        ft.Text(tr(item.title), color=TEXT, size=10, expand=True),
+                        ft.Text(tr("RESOLVED" if item.status == "resolved"
+                                   else item.severity.upper()), color=color, size=8,
+                                weight=ft.FontWeight.W_700),
+                    ], spacing=6),
+                    bgcolor=tint(color, .035), border_radius=6, padding=7,
+                ) for item in host_items]
+                hosts.append(ft.ExpansionTile(
+                    title=ft.Text(address, color=CYAN, size=10,
+                                  font_family="monospace", weight=ft.FontWeight.W_700),
+                    subtitle=ft.Text(tr(f"{len(host_items)} findings"), color=MUTED, size=9),
+                    leading=ft.Icon(ft.Icons.DEVICES_OTHER_ROUNDED, color=color, size=17),
+                    controls=[ft.Column([
+                        *previews,
+                        ft.Row([
+                            ft.Container(expand=True),
+                            ft.Button(
+                                content=tr("View device details"),
+                                icon=ft.Icons.OPEN_IN_NEW_ROUNDED,
+                                on_click=lambda e, host_address=address:
+                                    self._select_host(host_address),
+                            ),
+                        ]),
+                    ], spacing=6)],
+                    controls_padding=ft.padding.Padding.only(left=10, right=8, bottom=8),
+                    tile_padding=ft.padding.Padding.symmetric(horizontal=6, vertical=1),
+                    text_color=TEXT, icon_color=color, collapsed_text_color=TEXT,
+                    collapsed_icon_color=color, maintain_state=True, expanded=False,
+                ))
+            controls.append(ft.Container(
+                content=ft.ExpansionTile(
+                    title=ft.Text(tr(label), color=color, size=10,
+                                  weight=ft.FontWeight.W_700),
+                    subtitle=ft.Text(tr(f"{len(items)} findings in {len(hosts)} devices"),
+                                     color=MUTED, size=9),
+                    leading=ft.Icon(icon, color=color, size=18),
+                    controls=hosts,
+                    controls_padding=ft.padding.Padding.only(left=8, right=8, bottom=8),
+                    tile_padding=ft.padding.Padding.symmetric(horizontal=6, vertical=1),
+                    text_color=TEXT, icon_color=color, collapsed_text_color=TEXT,
+                    collapsed_icon_color=color, maintain_state=True,
+                    expanded=(label == "CRITICAL ISSUES"),
+                ),
+                bgcolor=tint(color, .03), border=ft.Border.all(1, tint(color, .14)),
+                border_radius=8,
+            ))
+        self.r_diagnostic_list.current.controls = controls or [
+            ft.Text("No active or recently resolved issues.", color=GREEN, size=11)
+        ]
+        translate_tree(self.r_diagnostic_list.current, get_language())
 
     def _reload_history(self, selected=None):
         if not self.r_history.current:
@@ -749,8 +1935,8 @@ class NetworkView:
         self.r_history.current.options = [
             ft.DropdownOption(
                 key=str(scan["id"]),
-                text=(f"#{scan['id']} {scan['started_at'][:16]} · {scan['target']} · "
-                      f"{scan['host_count']} hosts · {scan['risk_level']}")
+                text=tr(f"#{scan['id']} {scan['started_at'][:16]} · {scan['target']} · "
+                        f"{scan['host_count']} hosts · {scan['risk_level']}")
             )
             for scan in scans
         ]
@@ -764,7 +1950,338 @@ class NetworkView:
             self._render_scan(latest)
 
 
-# ── 3. LIVE PACKETS ────────────────────────────────────────────────────
+# ── 3. LOCAL PORTS ─────────────────────────────────────────────────────
+
+class LocalPortsView:
+    """Dedicated, read-only view of services listening on this computer."""
+
+    def __init__(self, page_ref):
+        self._page = page_ref
+        self.r_list = ft.Ref[ft.ListView]()
+        self.r_total = ft.Ref[ft.Text]()
+        self.r_exposed = ft.Ref[ft.Text]()
+        self.r_attention = ft.Ref[ft.Text]()
+        self.r_search = ft.Ref[ft.TextField]()
+        self.r_filter = ft.Ref[ft.Dropdown]()
+        self.r_match_count = ft.Ref[ft.Text]()
+        self.r_refresh_status = ft.Ref[ft.Text]()
+        self._listeners = []
+        self._filtered = []
+        self._summary_cards = []
+        self._toolbar = None
+        self._results = None
+        self._refresh_button = None
+        self._refresh_spinner = None
+        self._refreshing = False
+        self._minimum_refresh_indicator_seconds = 1.0
+        self._layout_key = None
+
+    def build(self):
+        async def on_refresh(_):
+            await self.refresh_async()
+
+        def metric(label, ref, color, icon):
+            return card(ft.Row([
+                ft.Container(ft.Icon(icon, color=color, size=25),
+                             bgcolor=tint(color, .08), border_radius=11, padding=9),
+                ft.Column([
+                    ft.Text(label, color=MUTED, size=9, weight=ft.FontWeight.W_700),
+                    ft.Text(ref=ref, value="0", color=color, size=22,
+                            weight=ft.FontWeight.W_700, font_family="monospace"),
+                ], spacing=1),
+            ], spacing=9), padding=12, glow=color)
+
+        self._summary_cards = [
+            metric("LISTENING PORTS", self.r_total, CYAN, ft.Icons.SENSORS_ROUNDED),
+            metric("NETWORK VISIBLE", self.r_exposed, AMBER, ft.Icons.PUBLIC_ROUNDED),
+            metric("REQUIRE ATTENTION", self.r_attention, RED,
+                   ft.Icons.WARNING_AMBER_ROUNDED),
+        ]
+        self._refresh_button = ft.Button(
+            content="REFRESH", icon=ft.Icons.REFRESH_ROUNDED,
+            color=PURPLE, bgcolor=tint(PURPLE, .11),
+            on_click=on_refresh,
+        )
+        self._refresh_spinner = ft.ProgressRing(
+            width=18, height=18, stroke_width=2, color=PURPLE,
+            visible=False,
+        )
+        self._toolbar = card(ft.Row([
+            ft.TextField(
+                ref=self.r_search, label="Port, process, service or address",
+                prefix_icon=ft.Icons.SEARCH_ROUNDED, width=330,
+                filled=True, fill_color=tint(CYAN, .025), border_color=BORDER,
+                focused_border_color=CYAN, border_radius=8,
+                on_change=lambda e: self._render(),
+            ),
+            ft.Dropdown(
+                ref=self.r_filter, label="Exposure filter", value="all", width=210,
+                options=[ft.DropdownOption(key, tr(label)) for key, label in (
+                    ("all", "All listeners"), ("exposed", "Network visible"),
+                    ("attention", "Require attention"), ("local", "Local only"),
+                )],
+                filled=True, fill_color=tint(PURPLE, .025), border_color=BORDER,
+                focused_border_color=PURPLE, border_radius=8,
+                on_select=lambda e: self._render(),
+            ),
+            self._refresh_spinner,
+            self._refresh_button,
+            ft.Text(ref=self.r_refresh_status, value="Not updated yet",
+                    color=MUTED, size=9),
+        ], spacing=10, wrap=True, run_spacing=8), padding=10)
+        self._results = card(ft.Column([
+            ft.Row([
+                section_title("PORTS OPEN ON THIS COMPUTER"),
+                ft.Container(expand=True),
+                ft.Text(ref=self.r_match_count,
+                        value="Press Refresh to inspect local ports.",
+                        color=MUTED, size=9),
+            ]),
+            ft.Text("A listening port is not automatically dangerous. Review the process and whether it is visible from the network.",
+                    color=MUTED, size=9),
+            ft.ListView(ref=self.r_list, spacing=6, expand=True, padding=2,
+                        scroll=ft.ScrollMode.AUTO, build_controls_on_demand=False),
+        ], spacing=8, expand=True), padding=12, expand=True)
+        return ft.Column([
+            view_heading("Local ports", "Processes and services listening on this computer",
+                         ft.Icons.PRIVACY_TIP_OUTLINED, PURPLE),
+            ft.Row(self._summary_cards, spacing=12, wrap=True, run_spacing=12),
+            self._toolbar, self._results,
+        ], spacing=12, expand=True)
+
+    def refresh(self, background=False):
+        # Protect against double-clicks and queued events while psutil is
+        # enumerating system sockets.
+        if self._refreshing:
+            return
+        self._refreshing = True
+        page = self._page[0] if self._page and self._page[0] else None
+        if self._refresh_button:
+            self._refresh_button.disabled = True
+            self._refresh_button.icon = None
+            self._refresh_button.content = tr("UPDATING...")
+        if self._refresh_spinner:
+            self._refresh_spinner.visible = True
+        if self.r_refresh_status.current:
+            self.r_refresh_status.current.value = tr("Inspecting local listeners...")
+            self.r_refresh_status.current.color = CYAN
+        if page:
+            page.update()
+        self._finish_refresh(page, time.monotonic(), False)
+
+    async def refresh_async(self):
+        """Refresh without blocking Flutter's desktop event loop."""
+        if self._refreshing:
+            return
+        self._refreshing = True
+        page = self._page[0] if self._page and self._page[0] else None
+        if self._refresh_button:
+            self._refresh_button.disabled = True
+            self._refresh_button.icon = None
+            self._refresh_button.content = tr("UPDATING...")
+        if self._refresh_spinner:
+            self._refresh_spinner.visible = True
+        if self.r_refresh_status.current:
+            self.r_refresh_status.current.value = tr("Inspecting local listeners...")
+            self.r_refresh_status.current.color = CYAN
+        if page:
+            page.update()
+        started_at = time.monotonic()
+        try:
+            listeners = await asyncio.to_thread(list_local_listeners)
+            remaining = self._minimum_refresh_indicator_seconds - (
+                time.monotonic() - started_at
+            )
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+            self._finish_refresh(page, started_at, False, listeners)
+        except Exception as exc:
+            self._finish_refresh(page, started_at, False, error=exc)
+
+    def _finish_refresh(self, page=None, started_at=None, keep_indicator_visible=False,
+                        listeners=None, error=None):
+        try:
+            if error is not None:
+                raise error
+            self._listeners = listeners if listeners is not None else list_local_listeners()
+            self.r_total.current.value = str(len(self._listeners))
+            self.r_exposed.current.value = str(sum(item.exposure != "local" for item in self._listeners))
+            self.r_attention.current.value = str(sum(
+                item.risk_level in {"high", "medium"} for item in self._listeners
+            ))
+            self._render()
+            if self.r_refresh_status.current:
+                stamp = datetime.now().strftime("%H:%M:%S")
+                self.r_refresh_status.current.value = tr(
+                    f"Updated at {stamp} · {len(self._listeners)} listening ports found"
+                )
+                self.r_refresh_status.current.color = GREEN
+        except Exception as exc:
+            if self.r_refresh_status.current:
+                self.r_refresh_status.current.value = tr(f"Update failed: {exc}")
+                self.r_refresh_status.current.color = RED
+        finally:
+            if keep_indicator_visible and started_at is not None:
+                remaining = self._minimum_refresh_indicator_seconds - (
+                    time.monotonic() - started_at
+                )
+                if remaining > 0:
+                    time.sleep(remaining)
+            if self._refresh_button:
+                self._refresh_button.disabled = False
+                self._refresh_button.icon = ft.Icons.REFRESH_ROUNDED
+                self._refresh_button.content = tr("REFRESH")
+            if self._refresh_spinner:
+                self._refresh_spinner.visible = False
+            self._refreshing = False
+            if page:
+                page.update()
+
+    def _render(self):
+        query = ((self.r_search.current.value if self.r_search.current else "") or "").lower()
+        selected = self.r_filter.current.value if self.r_filter.current else "all"
+        exposure_labels = {"local": "This computer only",
+                           "all_interfaces": "All network interfaces",
+                           "network_interface": "Specific network interface"}
+        filtered = []
+        for item in self._listeners:
+            haystack = f"{item.port} {item.protocol} {item.process} {item.service} {item.address}".lower()
+            if query and query not in haystack:
+                continue
+            if selected == "exposed" and item.exposure == "local":
+                continue
+            if selected == "attention" and item.risk_level == "low":
+                continue
+            if selected == "local" and item.exposure != "local":
+                continue
+            filtered.append(item)
+        self._filtered = filtered
+        if self.r_match_count.current:
+            self.r_match_count.current.value = tr(
+                f"{len(filtered)} of {len(self._listeners)} listening ports match the current filters."
+            )
+        if self.r_list.current:
+            self.r_list.current.controls = [self._port_control(item) for item in filtered] or [
+                ft.Container(
+                    content=ft.Text(
+                        "No ports match the current filter, or administrator permission is required.",
+                        color=MUTED, size=10,
+                    ), padding=14, alignment=ft.Alignment.CENTER,
+                )
+            ]
+            translate_tree(self.r_list.current, get_language())
+
+    def _port_control(self, item):
+        exposure_labels = {"local": "This computer only",
+                           "all_interfaces": "All network interfaces",
+                           "network_interface": "Specific network interface"}
+        color = RED if item.risk_level == "high" else AMBER if item.risk_level == "medium" else GREEN
+        return ft.Container(
+            content=ft.ListTile(
+                leading=ft.Container(
+                    content=ft.Text(f"{item.port}\n{item.protocol}", color=color,
+                                    size=10, weight=ft.FontWeight.W_700,
+                                    text_align=ft.TextAlign.CENTER,
+                                    font_family="monospace"),
+                    width=58, height=48, bgcolor=tint(color, .07),
+                    border_radius=8, alignment=ft.Alignment.CENTER,
+                ),
+                title=ft.Text(
+                    f"{item.process}  ·  PID {item.pid or '-'}  ·  {item.service}",
+                    color=TEXT, size=10, weight=ft.FontWeight.W_700,
+                ),
+                subtitle=ft.Text(
+                    f"{item.explanation}\n{item.address} · {item.family} · "
+                    f"{tr(exposure_labels[item.exposure])}",
+                    color=MUTED, size=9, max_lines=2,
+                ),
+                trailing=ft.Text(tr(item.risk_level.upper()), color=color, size=8,
+                                 weight=ft.FontWeight.W_700),
+                content_padding=ft.padding.Padding.symmetric(horizontal=8, vertical=2),
+            ),
+            bgcolor=tint(color, .025), border=ft.Border.all(1, tint(color, .13)),
+            border_radius=8,
+        )
+
+    def _show_results_dialog(self):
+        if not self._page or not self._page[0]:
+            return
+        page = self._page[0]
+        exposure_labels = {"local": "This computer only",
+                           "all_interfaces": "All network interfaces",
+                           "network_interface": "Specific network interface"}
+        controls = []
+        for item in self._filtered:
+            color = RED if item.risk_level == "high" else AMBER if item.risk_level == "medium" else GREEN
+            controls.append(ft.Container(
+                content=ft.ListTile(
+                    leading=ft.Container(
+                        content=ft.Text(f"{item.port}\n{item.protocol}", color=color,
+                                        size=10, weight=ft.FontWeight.W_700,
+                                        text_align=ft.TextAlign.CENTER,
+                                        font_family="monospace"),
+                        width=58, height=48, bgcolor=tint(color, .07),
+                        border_radius=8, alignment=ft.Alignment.CENTER,
+                    ),
+                    title=ft.Text(
+                        f"{item.process}  ·  PID {item.pid or '-'}  ·  {item.service}",
+                        color=TEXT, size=10, weight=ft.FontWeight.W_700,
+                    ),
+                    subtitle=ft.Text(
+                        f"{item.explanation}\n{item.address} · {item.family} · "
+                        f"{tr(exposure_labels[item.exposure])}",
+                        color=MUTED, size=9, max_lines=2,
+                    ),
+                    trailing=ft.Text(tr(item.risk_level.upper()), color=color, size=8,
+                                     weight=ft.FontWeight.W_700),
+                    content_padding=ft.padding.Padding.symmetric(horizontal=8, vertical=2),
+                ),
+                bgcolor=tint(color, .025), border=ft.Border.all(1, tint(color, .13)),
+                border_radius=8,
+            ))
+        def close(_=None):
+            page.pop_dialog()
+            page.update()
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("PORTS OPEN ON THIS COMPUTER", color=TEXT, size=13,
+                          weight=ft.FontWeight.W_700),
+            content=ft.Container(
+                content=ft.Column(
+                    controls or [ft.Text(
+                        "No ports match the current filter, or administrator permission is required.",
+                        color=MUTED, size=10,
+                    )],
+                    spacing=6, scroll=ft.ScrollMode.AUTO,
+                ),
+                width=760, height=520,
+            ),
+            actions=[ft.TextButton("Close", on_click=close)],
+            bgcolor=SURFACE, barrier_color="#66000000",
+        )
+        translate_tree(dialog, get_language())
+        page.show_dialog(dialog)
+
+    def on_mount(self):
+        # During the initial Flet mount the page is still composing its first
+        # frame, so perform this first population directly. Manual refreshes
+        # use the worker path and animated state above.
+        self.refresh(background=False)
+
+    def set_viewport(self, width: float, height: float):
+        content_width = max(300.0, width - 28.0)
+        columns = 3 if content_width >= 760 else 1
+        key = (columns, round(content_width))
+        if key == self._layout_key or not self._summary_cards:
+            return
+        self._layout_key = key
+        metric_width = (content_width - 12 * (columns - 1)) / columns
+        for item in self._summary_cards:
+            item.width = metric_width
+        self._toolbar.width = content_width
+
+
+# ── 4. LIVE PACKETS ────────────────────────────────────────────────────
 
 class PacketsView:
     def __init__(self, state: AppState, page_ref):
@@ -1146,6 +2663,7 @@ class HistoryView:
         self.r_dd    = ft.Ref[ft.Dropdown]()
         self.r_table = ft.Ref[ft.DataTable]()
         self.r_info  = ft.Ref[ft.Text]()
+        self.r_session_count = ft.Ref[ft.Text]()
         self.line_chart = LineChartCanvas(CYAN, GREEN, "Received", "Sent", 300, 210)
         self._header_card = None
         self._header_row = None
@@ -1177,21 +2695,37 @@ class HistoryView:
         )
         self._top_table = top_table
         self._session_dropdown = ft.Dropdown(
-            ref=self.r_dd, label="Session",
-            hint_text="Select a captured session…", options=[],
-            on_select=on_session, width=440,
-            bgcolor=SURFACE, color=TEXT,
-            border_color=BORDER, focused_border_color=CYAN, text_size=12,
+            ref=self.r_dd, label="Captured session",
+            hint_text="Choose a session to review", options=[],
+            on_select=on_session, width=620,
+            filled=True, fill_color=tint(CYAN, .025), color=TEXT,
+            border_color=BORDER, focused_border_color=CYAN,
+            border_radius=9, text_size=12, menu_height=360,
+            leading_icon=ft.Icons.HISTORY_ROUNDED,
+            enable_search=True,
         )
         self._header_row = ft.Row([
             self._session_dropdown,
-            ft.IconButton(ft.Icons.REFRESH_ROUNDED, on_click=on_refresh,
-                          icon_color=CYAN, tooltip="Reload sessions"),
-            ft.Text(ref=self.r_info, value="← select a session", size=12, color=MUTED),
+            ft.Button(content="RELOAD SESSIONS", icon=ft.Icons.REFRESH_ROUNDED,
+                      on_click=on_refresh, color=CYAN, bgcolor=tint(CYAN, .09)),
         ], spacing=10, wrap=True, run_spacing=10)
         self._header_card = card(
-            self._header_row,
-            padding=ft.padding.Padding.symmetric(horizontal=14, vertical=10),
+            ft.Column([
+                ft.Row([
+                    section_title("CAPTURED SESSIONS"),
+                    ft.Container(expand=True),
+                    ft.Text(ref=self.r_session_count, value="0 sessions",
+                            color=MUTED, size=10),
+                ]),
+                self._header_row,
+                ft.Container(
+                    content=ft.Text(ref=self.r_info, value="Select a session to see its summary",
+                                    size=11, color=MUTED),
+                    bgcolor=tint(CYAN, .025), border_radius=7,
+                    padding=ft.padding.Padding.symmetric(horizontal=10, vertical=7),
+                ),
+            ], spacing=9),
+            padding=12,
         )
         self._chart_card = card(ft.Column([
             ft.Row([
@@ -1253,12 +2787,26 @@ class HistoryView:
         self.r_dd.current.options = [
             ft.DropdownOption(
                 key=str(s["id"]),
-                text=(f"#{s['id']}  {str(s['start_time'])[:19]}"
-                      f"  [{s['interface']}]  {s.get('total_pkts',0):,} pkts"),
+                text=(f"#{s['id']}  ·  {str(s['start_time'])[:19]}"
+                      f"  ·  {s['interface']}  ·  {s.get('total_pkts',0):,} packets"),
             )
             for s in sessions
         ]
-        self.r_dd.current.update()
+        if self.r_session_count.current:
+            self.r_session_count.current.value = tr(f"{len(sessions)} sessions")
+        valid_values = {str(session["id"]) for session in sessions}
+        if self.r_dd.current.value not in valid_values:
+            self.r_dd.current.value = str(sessions[0]["id"]) if sessions else None
+            if sessions:
+                self._load(sessions[0]["id"])
+        if not sessions and self.r_info.current:
+            self.r_info.current.value = tr("No captured sessions yet")
+        try:
+            self.r_dd.current.update()
+        except RuntimeError:
+            # Allows the view model to be refreshed before first mount; Flet
+            # will render the populated value when the control is attached.
+            pass
 
     def _load(self, sid: int):
         stats = self.db.get_stats(sid)
@@ -1282,7 +2830,10 @@ class HistoryView:
                 ])
                 for t in tops
             ]
-            self.r_table.current.update()
+            try:
+                self.r_table.current.update()
+            except RuntimeError:
+                pass
 
         sessions = self.db.list_sessions()
         s = next((x for x in sessions if x["id"] == sid), None)
@@ -1293,16 +2844,23 @@ class HistoryView:
                 f"↓ {s.get('total_bytes_in',0)/1_048_576:.1f} MB  ·  "
                 f"↑ {s.get('total_bytes_out',0)/1_048_576:.1f} MB"
             )
-            self.r_info.current.update()
+            try:
+                self.r_info.current.update()
+            except RuntimeError:
+                pass
 
 
 # ── 5. SETTINGS ────────────────────────────────────────────────────────────
 
 class SettingsView:
-    def __init__(self, state: AppState, language: str = "en", on_language_change=None):
+    def __init__(self, state: AppState, language: str = "en", on_language_change=None,
+                 appearance=None, on_appearance_change=None):
         self.state = state
         self.language = language
         self.on_language_change = on_language_change
+        self.appearance = appearance or {"theme": "netpulse", "accent": "cyan",
+                                         "density": "standard"}
+        self.on_appearance_change = on_appearance_change
         self.r_bw_thresh   = ft.Ref[ft.TextField]()
         self.r_pps_thresh  = ft.Ref[ft.TextField]()
         self.r_alert_status = ft.Ref[ft.Text]()
@@ -1353,6 +2911,14 @@ class SettingsView:
                     self.r_alert_status.current.color = RED
                     self.r_alert_status.current.update()
 
+        def apply_appearance(e=None):
+            if self.on_appearance_change:
+                self.on_appearance_change(
+                    self._theme_dropdown.value or "netpulse",
+                    self._accent_dropdown.value or "cyan",
+                    self._density_dropdown.value or "standard",
+                )
+
         check_row = lambda txt, c=GREEN: ft.Row([
             ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, color=c, size=14),
             ft.Text(txt, size=12, color=TEXT),
@@ -1396,6 +2962,45 @@ class SettingsView:
                 ft.Text("Changes take effect on the next capture start.",
                         size=11, color=MUTED, italic=True),
             ], spacing=12))
+
+        self._theme_dropdown = ft.Dropdown(
+            label="Visual theme", value=self.appearance["theme"], width=250,
+            options=[ft.DropdownOption(key, tr(label)) for key, label in (
+                ("netpulse", "NetPulse dark"), ("midnight", "Midnight blue"),
+                ("graphite", "Graphite"), ("black", "Pure black"),
+            )],
+            bgcolor=SURFACE, color=TEXT, border_color=BORDER,
+            focused_border_color=PURPLE,
+        )
+        self._accent_dropdown = ft.Dropdown(
+            label="Accent color", value=self.appearance["accent"], width=220,
+            options=[ft.DropdownOption(key, tr(label)) for key, label in (
+                ("cyan", "Cyan"), ("blue", "Blue"), ("green", "Green"),
+                ("purple", "Purple"), ("amber", "Amber"),
+            )],
+            bgcolor=SURFACE, color=TEXT, border_color=BORDER,
+            focused_border_color=PURPLE,
+        )
+        self._density_dropdown = ft.Dropdown(
+            label="Interface density", value=self.appearance["density"], width=220,
+            options=[ft.DropdownOption(key, tr(label)) for key, label in (
+                ("compact", "Compact"), ("standard", "Standard"),
+                ("comfortable", "Comfortable"),
+            )],
+            bgcolor=SURFACE, color=TEXT, border_color=BORDER,
+            focused_border_color=PURPLE,
+        )
+        appearance_card = card(ft.Column([
+            section_title("APPEARANCE"),
+            ft.Divider(color=BORDER, height=8),
+            ft.Text("Customize the interface without restarting NetPulse.",
+                    color=MUTED, size=11),
+            ft.Row([self._theme_dropdown, self._accent_dropdown,
+                    self._density_dropdown], spacing=9, wrap=True, run_spacing=9),
+            ft.Button(content="APPLY APPEARANCE", icon=ft.Icons.PALETTE_OUTLINED,
+                      color=PURPLE, bgcolor=tint(PURPLE, .13),
+                      on_click=apply_appearance),
+        ], spacing=10))
 
         self._bw_field = ft.TextField(
             ref=self.r_bw_thresh,
@@ -1473,7 +3078,7 @@ class SettingsView:
             ], spacing=10))
 
         left_column = ft.Column(
-            [capture_card, database_card], spacing=12,
+            [capture_card, appearance_card, database_card], spacing=12,
         )
         right_column = ft.Column(
             [alerts_card, requirements_card], spacing=12,
@@ -1484,7 +3089,8 @@ class SettingsView:
             vertical_alignment=ft.CrossAxisAlignment.START,
         )
         self._cards = [
-            intro_card, capture_card, alerts_card, database_card, requirements_card
+            intro_card, capture_card, appearance_card, alerts_card,
+            database_card, requirements_card
         ]
         return ft.Column([
             view_heading("System settings", "Capture source, alert thresholds and local storage",
@@ -1512,22 +3118,13 @@ class SettingsView:
             column_widths = (content_width, content_width)
 
         self._settings_columns[0].width, self._settings_columns[1].width = column_widths
-        for control in (self._cards[1], self._cards[3]):
+        for control in (self._cards[1], self._cards[2], self._cards[4]):
             control.width = column_widths[0]
-        for control in (self._cards[2], self._cards[4]):
+        for control in (self._cards[3], self._cards[5]):
             control.width = column_widths[1]
 
-        if mode == "wide" and content_height >= 520:
-            # Balance both columns so Settings reads as one deliberate grid
-            # instead of leaving a large void below the shorter left column.
-            body_height = max(430.0, content_height - 160.0)
-            self._cards[1].height = body_height * 0.44 - 6.0
-            self._cards[3].height = body_height * 0.56 - 6.0
-            self._cards[2].height = body_height * 0.64 - 6.0
-            self._cards[4].height = body_height * 0.36 - 6.0
-        else:
-            for control in self._cards[1:]:
-                control.height = None
+        for control in self._cards[1:]:
+            control.height = None
         capture_inner = max(220.0, column_widths[0] - 28.0)
         self._interface_dropdown.width = min(500.0, capture_inner)
         alert_inner = max(220.0, column_widths[1] - 28.0)

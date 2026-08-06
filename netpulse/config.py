@@ -34,3 +34,37 @@ def save_language(language: str) -> None:
     DEFAULT_SETTINGS_PATH.write_text(
         json.dumps(current, indent=2, ensure_ascii=False), encoding="utf-8"
     )
+
+
+def load_appearance() -> dict:
+    """Load validated appearance preferences."""
+    defaults = {"theme": "netpulse", "accent": "cyan", "density": "standard"}
+    try:
+        data = json.loads(DEFAULT_SETTINGS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return defaults
+    appearance = data.get("appearance", {})
+    if appearance.get("theme") in {"netpulse", "midnight", "graphite", "black"}:
+        defaults["theme"] = appearance["theme"]
+    if appearance.get("accent") in {"cyan", "blue", "green", "purple", "amber"}:
+        defaults["accent"] = appearance["accent"]
+    if appearance.get("density") in {"compact", "standard", "comfortable"}:
+        defaults["density"] = appearance["density"]
+    return defaults
+
+
+def save_appearance(theme: str, accent: str, density: str) -> None:
+    ensure_runtime_directories()
+    current = {}
+    try:
+        current = json.loads(DEFAULT_SETTINGS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        pass
+    current["appearance"] = {
+        "theme": theme if theme in {"netpulse", "midnight", "graphite", "black"} else "netpulse",
+        "accent": accent if accent in {"cyan", "blue", "green", "purple", "amber"} else "cyan",
+        "density": density if density in {"compact", "standard", "comfortable"} else "standard",
+    }
+    DEFAULT_SETTINGS_PATH.write_text(
+        json.dumps(current, indent=2, ensure_ascii=False), encoding="utf-8"
+    )

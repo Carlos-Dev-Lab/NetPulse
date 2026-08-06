@@ -9,7 +9,8 @@ import os
 import flet as ft
 
 from netpulse.config import (
-    DEFAULT_DATABASE_PATH, ensure_runtime_directories, load_language, save_language,
+    DEFAULT_DATABASE_PATH, ensure_runtime_directories, load_appearance, load_language,
+    save_appearance, save_language,
 )
 from netpulse.domain.state import AppState
 from netpulse.infrastructure.database import DB
@@ -18,11 +19,11 @@ from netpulse.infrastructure.sniffer import Sniffer
 from netpulse.services.ip_info import geo_cache
 from .theme import (
     AMBER, BG, BORDER, CARD, CYAN, GREEN, MUTED, RED, SURFACE, TEXT,
-    make_theme, tint,
+    appearance_palette, make_theme, recolor_tree, tint,
 )
 from .views import (
-    ChartsView, DashboardView, HistoryView, NetworkView, PacketsView, ProcessView,
-    SettingsView,
+    ChartsView, DashboardView, HistoryView, LocalPortsView, NetworkView,
+    PacketsView, ProcessView, SettingsView,
 )
 from .i18n import set_language, translate_tree
 
@@ -34,9 +35,17 @@ logger = logging.getLogger(__name__)
 
 def main(page: ft.Page):
     # ── Page config ────────────────────────────────────────────────────
+    appearance = load_appearance()
+    current_palette = [appearance_palette(appearance["theme"], appearance["accent"])]
+    densities = {
+        "compact": ft.VisualDensity.COMPACT,
+        "standard": ft.VisualDensity.STANDARD,
+        "comfortable": ft.VisualDensity.COMFORTABLE,
+    }
     page.title      = "NetPulse — Network Analyzer"
-    page.bgcolor    = BG
-    page.theme      = make_theme()
+    page.bgcolor    = current_palette[0]["bg"]
+    page.theme      = make_theme(current_palette[0]["accent"], current_palette[0]["surface"],
+                                 densities[appearance["density"]])
     page.theme_mode = ft.ThemeMode.DARK
     page.padding    = 0
     # Flet uses logical pixels and Windows applies DPI scaling afterwards.
@@ -80,17 +89,41 @@ def main(page: ft.Page):
         except NameError:
             pass
 
+    def on_appearance_change(theme_name: str, accent_name: str, density_name: str):
+        new_palette = appearance_palette(theme_name, accent_name)
+        save_appearance(theme_name, accent_name, density_name)
+        page.bgcolor = new_palette["bg"]
+        page.window.bgcolor = new_palette["bg"]
+        page.theme = make_theme(
+            new_palette["accent"], new_palette["surface"],
+            densities.get(density_name, ft.VisualDensity.STANDARD),
+        )
+        try:
+            recolor_tree(app_layout, current_palette[0], new_palette)
+            main_content.bgcolor = new_palette["bg"]
+        except NameError:
+            pass
+        current_palette[0] = new_palette
+        page.update()
+
     # ── Views ──────────────────────────────────────────────────────────
     dash    = DashboardView(state)
-    net_v   = NetworkView(db, nmap_scanner, _page_ref)
+    net_v   = NetworkView(
+        db, nmap_scanner, _page_ref, state,
+        notification_sink=lambda title, message: _pending_alerts.append((title, message)),
+    )
+    ports_v = LocalPortsView(_page_ref)
     pkt_v   = PacketsView(state, _page_ref)
     chart_v = ChartsView(state)
     hist_v  = HistoryView(db)
     proc_v  = ProcessView(state)
-    sett_v  = SettingsView(state, language[0], on_language_change)
+    sett_v  = SettingsView(
+        state, language[0], on_language_change,
+        appearance=appearance, on_appearance_change=on_appearance_change,
+    )
 
     try:
-        initial_view = max(0, min(6, int(os.getenv("NETPULSE_INITIAL_VIEW", "0"))))
+        initial_view = max(0, min(7, int(os.getenv("NETPULSE_INITIAL_VIEW", "0"))))
     except ValueError:
         initial_view = 0
     _active = [initial_view]
@@ -103,12 +136,13 @@ def main(page: ft.Page):
 
     w_dash  = _wrap(dash.build())
     w_net   = _wrap(net_v.build())
+    w_ports = _wrap(ports_v.build())
     w_pkt   = _wrap(pkt_v.build())
     w_chart = _wrap(chart_v.build())
     w_hist  = _wrap(hist_v.build())
     w_proc  = _wrap(proc_v.build())
     w_sett  = _wrap(sett_v.build())
-    wrappers = [w_dash, w_net, w_pkt, w_chart, w_hist, w_proc, w_sett]
+    wrappers = [w_dash, w_net, w_ports, w_pkt, w_chart, w_hist, w_proc, w_sett]
 
     # ── Header refs ────────────────────────────────────────────────────
     r_dot    = ft.Ref[ft.Container]()
@@ -246,9 +280,9 @@ def main(page: ft.Page):
         stop_capture() if state.capturing else start_capture()
 
     # ── Navigation ─────────────────────────────────────────────────────
-    section_names = ["Overview", "Network discovery", "Packet explorer",
-                     "Traffic analytics", "Session history", "Applications",
-                     "System settings"]
+    section_names = ["Overview", "Network discovery", "Local ports",
+                     "Packet explorer", "Traffic analytics", "Session history",
+                     "Applications", "System settings"]
 
     def on_nav(e: ft.ControlEvent):
         idx = e.control.selected_index
@@ -265,7 +299,9 @@ def main(page: ft.Page):
             pass
         if idx == 1:   # Network discovery
             net_v.on_mount()
-        if idx == 4:   # Traffic history
+        if idx == 2:   # Local ports
+            ports_v.on_mount()
+        if idx == 5:   # Traffic history
             hist_v.on_mount()
             try:
                 main_content.update()
@@ -294,6 +330,8 @@ def main(page: ft.Page):
         destinations=[
             nav_dest(ft.Icons.DASHBOARD_OUTLINED, ft.Icons.DASHBOARD_ROUNDED, "Overview"),
             nav_dest(ft.Icons.LAN_OUTLINED, ft.Icons.LAN_ROUNDED, "Network"),
+            nav_dest(ft.Icons.PRIVACY_TIP_OUTLINED, ft.Icons.PRIVACY_TIP_ROUNDED,
+                     "Local ports"),
             nav_dest(ft.Icons.TABLE_ROWS_OUTLINED, ft.Icons.TABLE_ROWS_ROUNDED, "Packets"),
             nav_dest(ft.Icons.SHOW_CHART_OUTLINED, ft.Icons.SHOW_CHART_ROUNDED, "Analytics"),
             nav_dest(ft.Icons.HISTORY_ROUNDED, ft.Icons.HISTORY_ROUNDED, "History"),
@@ -401,6 +439,7 @@ def main(page: ft.Page):
         width = max(280.0, width)
         dash.set_viewport(width, height)
         net_v.set_viewport(width, height)
+        ports_v.set_viewport(width, height)
         pkt_v.set_viewport(width, height)
         chart_v.set_viewport(width, height)
         hist_v.set_viewport(width, height)
@@ -411,6 +450,7 @@ def main(page: ft.Page):
     main_content = ft.Container(
         content=wrappers[initial_view],
         expand=True,
+        bgcolor=BG,
         on_size_change=on_content_resize,
         size_change_interval=80,
     )
@@ -424,12 +464,17 @@ def main(page: ft.Page):
         workspace,
         status_bar,
     ], spacing=0, expand=True)
+    default_palette = appearance_palette("netpulse", "cyan")
+    if current_palette[0] != default_palette:
+        recolor_tree(app_layout, default_palette, current_palette[0])
     page.add(app_layout)
     translate_tree(app_layout, language[0])
     page.update()
     if initial_view == 1:
         net_v.on_mount()
-    elif initial_view == 4:
+    elif initial_view == 2:
+        ports_v.on_mount()
+    elif initial_view == 5:
         hist_v.on_mount()
 
     def apply_responsive_layout(width: float, height: float):
@@ -547,15 +592,20 @@ def main(page: ft.Page):
                     except Exception:
                         pass
 
+                # Dispatch persistent scan schedules every five seconds. The
+                # scan itself runs in its own task and never blocks telemetry.
+                if _tick % 25 == 0:
+                    net_v.poll_schedules()
+
                 # 6. Refresh active view
                 idx = nav.selected_index
                 if idx == 0:
                     dash.refresh()
-                elif idx == 2:
-                    pkt_v.refresh()
                 elif idx == 3:
+                    pkt_v.refresh()
+                elif idx == 4:
                     chart_v.refresh()
-                elif idx == 5:
+                elif idx == 6:
                     proc_v.refresh()
                 # Network/history/settings are event and DB based.
 

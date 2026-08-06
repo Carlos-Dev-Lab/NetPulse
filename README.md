@@ -19,6 +19,7 @@ cada 200 ms y se adapta al tamaño y al escalado DPI de la ventana de Windows.
 - [Uso en escritorio](#uso-en-escritorio)
 - [Guía de la interfaz](#guía-de-la-interfaz)
 - [Escaneos Nmap](#escaneos-nmap)
+- [Diagnóstico, inventario y automatización](#diagnóstico-inventario-y-automatización)
 - [Datos y privacidad](#datos-y-privacidad)
 - [Arquitectura](#arquitectura)
 - [Estructura del proyecto](#estructura-del-proyecto)
@@ -49,6 +50,32 @@ cada 200 ms y se adapta al tamaño y al escalado DPI de la ventana de Windows.
 - Indicadores de riesgo por dispositivo y para el escaneo completo.
 - Alertas sobre servicios expuestos o potencialmente peligrosos.
 - Detección de dispositivos, puertos y servicios nuevos, cerrados o cambiados.
+- Centro de diagnóstico con prioridad, explicación del riesgo, evidencia y
+  acciones recomendadas.
+- Verificación automática de servicios expuestos que quedaron resueltos en el
+  análisis siguiente.
+- Mapa de red agrupado por segmentos `/24`, con identificación del equipo
+  local, router probable, riesgo y confianza de cada nodo.
+- Inventario persistente editable con nombre, tipo, propietario, ubicación,
+  notas y estado de confianza.
+- Comparación visual entre análisis consecutivos con equipos nuevos o ausentes,
+  cambios de IP por MAC, puertos abiertos/cerrados y variación del riesgo.
+- Explicación interactiva de servicios expuestos con motivo, recomendación y
+  comando acotado de verificación.
+- Informes PDF, HTML y CSV con resumen ejecutivo, inventario, riesgos,
+  evidencias y recomendaciones.
+- Búsqueda global por IP, MAC, hostname, propietario, proceso, aplicación,
+  puerto, servicio o endpoint histórico.
+- Perfiles personalizados para guardar grupos de redes y métodos de análisis.
+- Escaneos recurrentes persistentes con intervalos configurables, estado de
+  ejecución y opción de notificar únicamente cambios relevantes.
+- Notificaciones dentro del escritorio para dispositivos nuevos, puertos
+  sensibles, cambios importantes, fallos programados y umbrales de tráfico.
+
+Los escaneos programados se ejecutan mientras NetPulse permanece abierto. La
+agenda y su próxima ejecución se conservan en SQLite entre reinicios.
+- Puntuación explicable de salud de `0` a `100`, con cada descuento detallado
+  por servicios expuestos, confianza, cambios, scripts NSE y cobertura.
 - Historial de escaneos consultable desde la interfaz.
 - Registro del método, comando, versión de Nmap y duración del análisis.
 
@@ -189,6 +216,54 @@ un escaneo accidentalmente extenso.
 El selector **Scan history** permite abrir resultados anteriores. Los cambios
 se calculan comparando el nuevo resultado con el último escaneo del mismo
 objetivo.
+
+## Diagnóstico, inventario y automatización
+
+Después de un análisis, la vista **Network** ofrece un flujo completo:
+
+1. **Salud de la red** muestra una puntuación de `0` a `100`. El acordeón de
+   detalle enumera cada descuento y su evidencia; no es una valoración opaca.
+2. **Antes vs. ahora** compara el resultado con el análisis anterior del mismo
+   objetivo: equipos nuevos o ausentes, cambios de IP por MAC, puertos
+   abiertos/cerrados y variación del riesgo.
+3. **Centro de diagnóstico** ordena los problemas por IP y explica prioridad,
+   motivo, acción recomendada, evidencia y controles que quedaron resueltos.
+4. **Mapa de red** agrupa los nodos por segmento `/24`, identifica el equipo
+   local y el router probable, y colorea cada nodo por riesgo y confianza.
+5. **Dispositivos y servicios** permite seleccionar una IP para filtrar sus
+   alertas. Al pulsar un puerto se abre su explicación y una verificación Nmap
+   acotada.
+
+El inventario se actualiza automáticamente sin sobrescribir los campos
+manuales. El botón de edición de cada dispositivo permite guardar:
+
+- nombre personalizado y tipo de dispositivo;
+- propietario y ubicación;
+- notas operativas;
+- confianza: `new`, `known`, `authorized` o `blocked`.
+
+La búsqueda global admite IP, MAC, hostname, alias, propietario, ubicación,
+puerto, servicio, producto, versión, endpoint histórico y procesos observados.
+
+### Informes
+
+Seleccione un análisis del historial y pulse **EXPORT REPORT**. NetPulse crea
+en `exports/` tres archivos con el mismo identificador y fecha:
+
+- PDF listo para compartir, con resumen, salud, inventario y recomendaciones;
+- HTML consultable o imprimible;
+- CSV con una fila por dispositivo y servicio, compatible con Excel.
+
+### Perfiles y escaneos programados
+
+En **Profiles and schedules** puede guardar un nombre para el objetivo y método
+actual, recuperarlo después y crear una ejecución cada 15 o 30 minutos, 1, 6 o
+24 horas. Cada programación puede notificar siempre o solamente cuando haya
+cambios relevantes.
+
+La agenda se conserva en SQLite, pero se ejecuta únicamente mientras NetPulse
+está abierto. Los análisis automáticos usan el mismo historial, diagnóstico,
+inventario y límites de seguridad que los manuales.
 
 ### Packets
 

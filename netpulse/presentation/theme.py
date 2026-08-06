@@ -32,6 +32,64 @@ PROTO_COLORS: dict = {
 }
 PROTO_LIST = list(PROTO_COLORS.keys())
 
+APPEARANCE_THEMES = {
+    "netpulse": {"bg": BG, "surface": SURFACE, "card": CARD, "border": BORDER},
+    "midnight": {"bg": "#050B18", "surface": "#091427", "card": "#0E1C33", "border": "#203B5B"},
+    "graphite": {"bg": "#0D0F13", "surface": "#14171D", "card": "#1B1F27", "border": "#343B48"},
+    "black": {"bg": "#000000", "surface": "#07090C", "card": "#0E1116", "border": "#252A33"},
+}
+
+APPEARANCE_ACCENTS = {
+    "cyan": CYAN, "blue": BLUE, "green": GREEN, "purple": PURPLE, "amber": AMBER,
+}
+
+
+def appearance_palette(theme: str, accent: str) -> dict:
+    palette = dict(APPEARANCE_THEMES.get(theme, APPEARANCE_THEMES["netpulse"]))
+    palette["accent"] = APPEARANCE_ACCENTS.get(accent, CYAN)
+    return palette
+
+
+def recolor_tree(control, old_palette: dict, new_palette: dict) -> None:
+    """Replace palette colors on mounted Flet controls in-place."""
+    if control is None:
+        return
+
+    def replace(value):
+        if not isinstance(value, str):
+            return value
+        upper = value.upper()
+        for key in ("bg", "surface", "card", "border", "accent"):
+            old = old_palette[key].upper()
+            new = new_palette[key].upper()
+            if upper == old:
+                return new
+            if len(upper) == 9 and upper.endswith(old.lstrip("#")):
+                return upper[:3] + new.lstrip("#")
+        return value
+
+    for attr in (
+        "bgcolor", "color", "icon_color", "focused_border_color", "border_color",
+        "cursor_color", "fill_color", "indicator_color", "active_color",
+        "selected_icon_color", "shadow_color",
+    ):
+        try:
+            value = getattr(control, attr, None)
+            changed = replace(value)
+            if changed != value:
+                setattr(control, attr, changed)
+        except (AttributeError, TypeError, ValueError):
+            pass
+    for attr in ("content", "title", "subtitle", "leading", "trailing", "icon"):
+        child = getattr(control, attr, None)
+        if child is not None and not isinstance(child, (str, int, float, bool)):
+            recolor_tree(child, old_palette, new_palette)
+    for attr in ("controls", "actions", "destinations", "rows", "cells"):
+        children = getattr(control, attr, None)
+        if children:
+            for child in list(children):
+                recolor_tree(child, old_palette, new_palette)
+
 
 def proto_color(p: str) -> str:
     return PROTO_COLORS.get(p, MUTED)
@@ -43,16 +101,18 @@ def tint(color: str, opacity: float) -> str:
 
 
 # ── Theme factory ─────────────────────────────────────────────────────────────
-def make_theme() -> ft.Theme:
+def make_theme(accent: str = CYAN, surface: str = SURFACE,
+               density: ft.VisualDensity = ft.VisualDensity.STANDARD) -> ft.Theme:
     """Flet 0.85 compatible theme — uses color_scheme_seed only."""
     return ft.Theme(
-        color_scheme_seed=CYAN,
+        color_scheme_seed=accent,
+        visual_density=density,
         color_scheme=ft.ColorScheme(
-            primary=CYAN,
+            primary=accent,
             secondary=GREEN,
             on_primary="#000000",
             on_surface=TEXT,
-            surface=SURFACE,
+            surface=surface,
         ),
     )
 
