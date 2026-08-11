@@ -4,6 +4,7 @@ Async background capture via Scapy + Npcap.
 Requires: Administrator privileges on Windows.
 """
 import queue
+import ipaddress
 import time
 import threading
 import psutil
@@ -140,7 +141,7 @@ class Sniffer:
         return self._sniff is not None and self._sniff.running
 
     def start(self, iface_name: Optional[str] = None):
-        """Start async capture. Pass None to capture on all interfaces."""
+        """Start async capture on one interface or all active interfaces."""
         from scapy.all import AsyncSniffer   # noqa – imported lazily
 
         # Clear queues
@@ -168,6 +169,15 @@ class Sniffer:
             resolved = self._resolve_iface(iface_name)
             if resolved:
                 kw["iface"] = resolved
+        else:
+            # On Scapy/Windows, omitting ``iface`` captures only on Scapy's
+            # default adapter.  That adapter can be a disconnected Ethernet
+            # device even while Wi-Fi is carrying all traffic.  Explicitly
+            # provide every usable, active adapter to preserve the UI's
+            # advertised "All" semantics.
+            active = self._active_capture_interfaces()
+            if active:
+                kw["iface"] = active
 
         self._sniff = AsyncSniffer(**kw)
         self._sniff.start()
@@ -216,6 +226,31 @@ class Sniffer:
             pass
         return name   # fallback: pass as-is
 
+    @classmethod
+    def _active_capture_interfaces(cls) -> List[str]:
+        """Return Scapy names for active adapters with a usable IPv4 address."""
+        interfaces: List[str] = []
+        try:
+            stats = psutil.net_if_stats()
+            for name, addrs in psutil.net_if_addrs().items():
+                if not stats.get(name) or not stats[name].isup:
+                    continue
+                usable = False
+                for address in addrs:
+                    if address.family.name != "AF_INET":
+                        continue
+                    ip = ipaddress.ip_address(address.address)
+                    if not ip.is_loopback and not ip.is_link_local and not ip.is_unspecified:
+                        usable = True
+                        break
+                if usable:
+                    resolved = cls._resolve_iface(name)
+                    if resolved and resolved not in interfaces:
+                        interfaces.append(resolved)
+        except Exception:
+            return []
+        return interfaces
+
     def _cb(self, pkt):
         try:
             if self._raw_q.full():          # drop oldest if overflowing
@@ -262,20 +297,33 @@ class Sniffer:
 
             proto = "OTHER"
             sport = dport = None
+            info = ""
 
             if pkt.haslayer(TCP):
                 t = pkt[TCP]
                 sport, dport = t.sport, t.dport
                 if 443 in (sport, dport):
                     proto = "HTTPS"
+                    info = "Encrypted TLS traffic"
                 elif 80 in (sport, dport):
                     proto = "HTTP"
+                    info = "Unencrypted HTTP traffic"
                 else:
                     proto = "TCP"
             elif pkt.haslayer(UDP):
                 u = pkt[UDP]
                 sport, dport = u.sport, u.dport
                 proto = "DNS" if (53 in (sport, dport) or pkt.haslayer(DNS)) else "UDP"
+                if proto == "DNS" and pkt.haslayer(DNS):
+                    try:
+                        dns = pkt[DNS]
+                        if dns.qr == 0 and dns.qd and getattr(dns.qd, "qname", None):
+                            query = dns.qd.qname.decode(errors="replace").rstrip(".")
+                            info = f"DNS query: {query}"
+                        elif dns.qr == 1:
+                            info = "DNS response"
+                    except Exception:
+                        info = "DNS traffic"
             elif pkt.haslayer(ICMP):
                 proto = "ICMP"
 
@@ -288,6 +336,7 @@ class Sniffer:
                 src=src, dst=dst, sport=sport, dport=dport,
                 size=size, remote=remote,
                 pid=pid, proc_name=proc_name,
+                info=info,
             )
         except Exception:
             return None

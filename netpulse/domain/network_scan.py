@@ -35,6 +35,7 @@ class ScanHost:
     services: list[ScanService] = field(default_factory=list)
     risk_score: int = 0
     risk_level: str = "low"
+    device_id: Optional[int] = None
 
     @property
     def open_ports(self) -> list[ScanService]:

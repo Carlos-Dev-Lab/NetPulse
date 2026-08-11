@@ -69,6 +69,19 @@ class I18nTests(unittest.TestCase):
         self.assertEqual(dialog.actions[0].content, "Cancelar")
         self.assertEqual(dialog.actions[1].content, "Guardar perfil")
 
+    def test_translation_handles_frozen_tab_controls(self):
+        tabs = ft.TabBar(tabs=[
+            ft.Tab(label="Scan"),
+            ft.Tab(label=ft.Text("Assets")),
+        ])
+
+        translate_tree(tabs, "es")
+
+        # Before mounting, Flet still permits a raw string update. NetPulse
+        # uses a Text label so it remains translatable after Tab is frozen.
+        self.assertEqual(tabs.tabs[0].label, "Escaneo")
+        self.assertEqual(tabs.tabs[1].label.value, "Activos")
+
 
 if __name__ == "__main__":
     unittest.main()

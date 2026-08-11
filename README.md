@@ -1,9 +1,10 @@
 # NetPulse
 
-NetPulse es una aplicación de escritorio para supervisar redes en
-Windows. Combina captura pasiva de tráfico con **Scapy/Npcap** y análisis activo
-con **Nmap** para ofrecer una vista unificada de dispositivos, conexiones,
-protocolos, puertos, servicios, riesgos y cambios en la red.
+NetPulse es una aplicación de escritorio para entender, de forma clara, qué
+está usando la red de un equipo Windows. Agrupa el tráfico por aplicación,
+muestra sus procesos, destinos, conexiones, transferencia y picos, y lo combina
+con captura pasiva mediante **Scapy/Npcap**, inventario de activos y análisis
+activo opcional con **Nmap**.
 
 La interfaz nativa está construida con Flet Desktop, actualiza la telemetría
 cada 200 ms y se adapta al tamaño y al escalado DPI de la ventana de Windows.
@@ -21,9 +22,11 @@ cada 200 ms y se adapta al tamaño y al escalado DPI de la ventana de Windows.
 - [Escaneos Nmap](#escaneos-nmap)
 - [Diagnóstico, inventario y automatización](#diagnóstico-inventario-y-automatización)
 - [Datos y privacidad](#datos-y-privacidad)
+- [Alcance y limitaciones](#alcance-y-limitaciones)
 - [Arquitectura](#arquitectura)
 - [Estructura del proyecto](#estructura-del-proyecto)
 - [Pruebas](#pruebas)
+- [Estado actual y hoja de ruta](#estado-actual-y-hoja-de-ruta)
 - [Solución de problemas](#solución-de-problemas)
 
 ## Funciones principales
@@ -39,6 +42,16 @@ cada 200 ms y se adapta al tamaño y al escalado DPI de la ventana de Windows.
 - Gráficos de ancho de banda y distribución acumulada por protocolo.
 - Asociación aproximada de puertos con procesos locales mediante psutil.
 - Alertas configurables por ancho de banda y paquetes por segundo.
+
+### Tráfico por aplicación
+
+- Agrupación de múltiples procesos de una misma aplicación, sin ocultar sus PID.
+- Descarga, subida, destinos y actividad actual por aplicación e instancia.
+- Detalle de conexiones remotas con IP, puerto, protocolo, dominio y dirección.
+- Evidencia reciente de DNS, HTTP y sesiones TLS sin intentar descifrar HTTPS.
+- Detección de picos frente a la actividad habitual de cada aplicación.
+- Indicadores orientativos para gaming, conexiones persistentes, subida intensa,
+  muchos destinos y tráfico HTTP sin cifrar.
 
 ### Inventario y análisis de red
 
@@ -56,8 +69,10 @@ cada 200 ms y se adapta al tamaño y al escalado DPI de la ventana de Windows.
   análisis siguiente.
 - Mapa de red agrupado por segmentos `/24`, con identificación del equipo
   local, router probable, riesgo y confianza de cada nodo.
-- Inventario persistente editable con nombre, tipo, propietario, ubicación,
-  notas y estado de confianza.
+- Inventario persistente basado en activos estables (`device_id`), con IP, MAC,
+  hostname, sistema, servicios y apariciones tratados como observaciones.
+- Estados, criticidad, responsable, ubicación, etiquetas, confianza, historial y
+  revisión humana de posibles duplicados; permite fusionar y separar activos.
 - Comparación visual entre análisis consecutivos con equipos nuevos o ausentes,
   cambios de IP por MAC, puertos abiertos/cerrados y variación del riesgo.
 - Explicación interactiva de servicios expuestos con motivo, recomendación y
@@ -166,11 +181,11 @@ También puede usar el lanzador, que solicita permisos de administrador:
 
 ### Flujo recomendado
 
-1. Abra **Settings** y seleccione la interfaz de red. `All interfaces` funciona
-   como opción general, pero elegir la interfaz activa produce resultados más
-   precisos.
+1. Seleccione la interfaz de red desde el encabezado o desde **Settings**.
+   `All interfaces` elige las interfaces activas disponibles.
 2. Regrese al **Dashboard** y pulse **START** para iniciar la captura.
-3. Revise velocidades, protocolos, conexiones y paquetes en tiempo real.
+3. Abra **Applications** para saber qué programas usan la red, con qué destinos
+   se conectan y qué procesos pertenecen a cada aplicación.
 4. Abra **Network** para ejecutar un análisis Nmap independiente de la captura.
 5. Pulse **STOP** antes de cerrar para completar correctamente la sesión.
 6. Consulte **History** para revisar las sesiones guardadas.
@@ -219,9 +234,14 @@ objetivo.
 
 ## Diagnóstico, inventario y automatización
 
-Después de un análisis, la vista **Network** ofrece un flujo completo:
+La vista **Network** mantiene la búsqueda y los indicadores generales visibles,
+y organiza el trabajo en cinco pestañas para evitar una columna extensa de
+acordeones: **Escaneo**, **Activos**, **Diagnóstico**, **Mapa** y
+**Automatización**.
 
-1. **Salud de la red** muestra una puntuación de `0` a `100`. El acordeón de
+Después de un análisis ofrece este flujo:
+
+1. **Salud de la red** muestra una puntuación de `0` a `100`. Su panel de
    detalle enumera cada descuento y su evidencia; no es una valoración opaca.
 2. **Antes vs. ahora** compara el resultado con el análisis anterior del mismo
    objetivo: equipos nuevos o ausentes, cambios de IP por MAC, puertos
@@ -234,13 +254,30 @@ Después de un análisis, la vista **Network** ofrece un flujo completo:
    alertas. Al pulsar un puerto se abre su explicación y una verificación Nmap
    acotada.
 
-El inventario se actualiza automáticamente sin sobrescribir los campos
-manuales. El botón de edición de cada dispositivo permite guardar:
+El inventario empresarial usa un `device_id` estable. La IP actual es un dato
+derivado y puede cambiar sin perder el historial ni los campos manuales. Cada
+escaneo registra como evidencias las IP, MAC, nombres, fabricante, sistema
+operativo y huellas de servicios observadas.
+
+Cuando varias señales indican que dos registros podrían ser el mismo equipo,
+NetPulse crea una sugerencia explicada. La fusión nunca es automática: debe
+confirmarse desde **Enterprise Asset Inventory** y puede deshacerse conservando
+las observaciones y eventos de ambos registros.
+
+El editor de cada activo permite guardar:
 
 - nombre personalizado y tipo de dispositivo;
 - propietario y ubicación;
-- notas operativas;
-- confianza: `new`, `known`, `authorized` o `blocked`.
+- notas y etiquetas operativas;
+- criticidad: `low`, `medium`, `high` o `critical`;
+- ciclo de vida: `new`, `observing`, `authorized`, `blocked`, `retired` o
+  `stale`;
+- fecha de revisión y confianza de identidad.
+
+La vista prioriza activos nuevos, pendientes de revisión, críticos,
+desaparecidos, bloqueados en línea y posibles duplicados. El historial de cada
+activo registra cambios de IP, apariciones, desapariciones, bloqueos, cambios
+de responsable y fusiones o separaciones.
 
 La búsqueda global admite IP, MAC, hostname, alias, propietario, ubicación,
 puerto, servicio, producto, versión, endpoint histórico y procesos observados.
@@ -299,11 +336,28 @@ Permite seleccionar una sesión de captura guardada y consultar:
 Este historial corresponde a captura pasiva. El historial de Nmap se consulta
 desde la vista **Network**.
 
-### Processes
+### Applications
 
-Relaciona conexiones observadas con procesos locales usando la información de
-puertos proporcionada por psutil. La atribución es aproximada: conexiones muy
-breves, procesos protegidos o cambios rápidos de puerto pueden no identificarse.
+La vista **Application traffic** explica el tráfico desde la perspectiva del
+usuario. Separa descarga y subida por proceso/PID y muestra velocidad actual,
+estado, participación y cantidad de destinos. Permite buscar por aplicación,
+PID, dominio o IP y filtrar aplicaciones activas, mayor descarga, mayor subida
+o procesos sin identificar.
+
+Al abrir una aplicación se muestran su ejecutable, protocolos, destinos,
+organización, puertos, transferencia y evidencia reciente de paquetes. La
+vista también conserva velocidad media y pico, identifica ráfagas frente a la
+línea base de la aplicación y separa conexiones remotas activas y recientes.
+Incluye indicadores explicados para patrones UDP de tiempo real, subidas
+inusuales, HTTP sin cifrar y cantidades elevadas de destinos.
+
+NetPulse muestra metadatos observables: dirección, tamaño, frecuencia,
+aplicación, IP, dominio, puerto y protocolo. Para DNS puede mostrar el nombre
+consultado. HTTPS/TLS y la mayoría de los juegos cifran el contenido, por lo
+que no se presentan mensajes, archivos o credenciales como si fueran visibles.
+La atribución usa la tabla de conexiones de Windows mediante `psutil` y es
+aproximada: conexiones muy breves, procesos protegidos o cambios rápidos de
+puerto pueden no identificarse.
 
 ### Settings
 
@@ -379,6 +433,26 @@ NetPulse persiste:
 NetPulse **no guarda el contenido completo de los paquetes**. Los paquetes
 recientes se mantienen temporalmente en memoria para alimentar la interfaz.
 
+## Alcance y limitaciones
+
+NetPulse ofrece visibilidad y diagnóstico local; no reemplaza un IDS/IPS, un
+firewall ni una plataforma forense. Para interpretar sus resultados:
+
+- La captura pasiva actual procesa IPv4. La compatibilidad completa con IPv6
+  queda pendiente.
+- HTTPS y TLS están cifrados: se muestran endpoint, volumen y metadatos, no el
+  contenido exacto enviado o recibido.
+- La asociación paquete-proceso se infiere desde puertos locales; una conexión
+  muy breve puede cerrar antes de que `psutil` la observe.
+- Las puntuaciones de riesgo son heurísticas, no una prueba de vulnerabilidad o
+  actividad maliciosa.
+- País, ASN y DNS inverso son datos aproximados obtenidos de servicios externos;
+  actualmente la consulta geográfica utiliza `ip-api.com`.
+- Los escaneos programados solo se ejecutan mientras la aplicación permanece
+  abierta.
+- SQLite conserva resúmenes y observaciones, no el payload bruto completo de
+  todos los paquetes.
+
 El enriquecimiento de IP puede enviar la IP consultada a `ip-api.com`. Esta
 función necesita Internet y está sujeta a disponibilidad y límites del servicio.
 
@@ -434,8 +508,10 @@ network_analyzer/
 │   │   └── ip_info.py              DNS inverso, país y ASN
 │   └── presentation/
 │       ├── app.py                  Composición y ciclo de actualización
+│       ├── application_traffic.py  Modelo de presentación por aplicación
 │       ├── views.py                Vistas de escritorio adaptables
 │       ├── charts.py               Gráficos personalizados
+│       ├── i18n.py                 Textos en español e inglés
 │       └── theme.py                Colores y tema Flet
 ├── data/
 │   └── netpulse.db                 Base creada durante la ejecución
@@ -447,6 +523,9 @@ network_analyzer/
 ├── tests/
 │   ├── test_database.py            Persistencia de sesiones
 │   ├── test_nmap.py                XML, riesgo, cambios e historial Nmap
+│   ├── test_assets.py              Identidad e historial de activos
+│   ├── test_application_traffic.py Agrupación, conexiones y picos
+│   ├── test_sniffer.py             Evidencia de paquetes
 │   ├── test_state.py               Agregación de tráfico
 │   └── test_system.py              Dependencias y componentes Flet
 ├── requirements.txt
@@ -463,6 +542,7 @@ Definidas en `requirements.txt`:
 | `flet-desktop` | Cliente nativo de escritorio |
 | `scapy` | Captura y decodificación de paquetes |
 | `psutil` | Interfaces, sistema y asociación con procesos |
+| `reportlab` | Generación de informes PDF |
 
 Nmap, Npcap y SQLite no se instalan mediante `pip`. SQLite forma parte de la
 biblioteca estándar de Python; Nmap y Npcap son dependencias externas del
@@ -473,8 +553,10 @@ sistema operativo.
 ### Suite automatizada
 
 ```powershell
-.\.venv\Scripts\python.exe -W error::DeprecationWarning -m unittest discover -v
+.\.venv\Scripts\python.exe -W error::DeprecationWarning -m unittest discover -s tests -v
 ```
+
+La revisión actual ejecuta **72 pruebas automatizadas**.
 
 ### Comprobación de sintaxis
 
@@ -502,6 +584,27 @@ Una ejecución correcta termina con:
 ```text
 SYSTEM_CHECK_OK
 ```
+
+## Estado actual y hoja de ruta
+
+NetPulse está en un estado funcional avanzado para uso local y pruebas piloto.
+Su captura real, inventario, tráfico por aplicación, análisis Nmap, informes y
+persistencia están cubiertos por pruebas. Para considerarlo un producto
+empresarial listo para producción, las prioridades recomendadas son:
+
+1. Copia y restauración de SQLite, retención configurable y migraciones de
+   esquema versionadas.
+2. Registro persistente con rotación, centro de diagnóstico y métricas de
+   paquetes descartados.
+3. Captura IPv6 y mejor seguimiento del ciclo de vida de conexiones y procesos.
+4. Convertir la planificación en un servicio de Windows que funcione con la UI
+   cerrada.
+5. Instalador firmado, actualización segura y configuración explícita de
+   privacidad para el enriquecimiento externo.
+6. Dividir los módulos grandes de vistas y base de datos para facilitar su
+   mantenimiento.
+7. Añadir pruebas end-to-end de escritorio, sesiones prolongadas, alto volumen
+   y bases migradas desde versiones anteriores.
 
 ## Solución de problemas
 
@@ -557,4 +660,4 @@ el enriquecimiento no responda.
 El proyecto se ha comprobado con Python 3.12, Flet 0.85.3, Scapy 2.7.0,
 psutil 7.2.2, Nmap 7.99 y Npcap en Windows. La validación incluye interfaz de
 escritorio, captura real, escaneo Nmap, persistencia y pruebas
-automatizadas.
+automatizadas. La suite actual contiene 72 pruebas.

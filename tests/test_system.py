@@ -35,6 +35,51 @@ from netpulse.services.local_ports import LocalListener
 
 
 class SystemSmokeTests(unittest.TestCase):
+    def test_analytics_uses_available_desktop_height(self):
+        view = ChartsView(AppState())
+        view.build()
+
+        view.set_viewport(1400, 1100)
+
+        self.assertEqual(view.line_chart.H, 680.0)
+        self.assertEqual(view.bar_chart.H, 680.0)
+
+    def test_network_opens_new_scan_mode_without_loading_history(self):
+        class PageStub:
+            def update(self):
+                pass
+
+        with TemporaryDirectory() as directory:
+            db = DB(Path(directory) / "network-tabs.db")
+            now = datetime(2026, 1, 1)
+            db.save_network_scan(NetworkScan(
+                "192.168.1.0/24", "quick", "nmap", now, now, 1,
+                hosts=[ScanHost("192.168.1.10")],
+            ))
+            view = NetworkView(db, NmapScanner(), [PageStub()])
+            view.build()
+            view.on_mount()
+
+            tab_bar = view._network_tabs.content.controls[0]
+            self.assertEqual(view._network_tabs.length, 5)
+            self.assertFalse(tab_bar.scrollable)
+            self.assertEqual(tab_bar.tab_alignment, flet.TabAlignment.FILL)
+            self.assertIs(view._scan_mode_content.content, view._scan_card)
+            self.assertIsNone(view._current_scan)
+            self.assertEqual(view.r_devices.current.value, "0")
+            self.assertEqual(len(view.r_history.current.options), 1)
+            self.assertIsNone(view.r_history.current.value)
+            self.assertTrue(view.r_history.current.editable)
+            self.assertTrue(view.r_history.current.enable_filter)
+            self.assertTrue(view.r_history.current.enable_search)
+            self.assertEqual(view.r_history.current.menu_height, 320)
+
+            view._render_scan(db.get_latest_network_scan())
+            self.assertEqual(view.r_devices.current.value, "1")
+            view._new_scan_button.on_click(None)
+            self.assertIsNone(view._current_scan)
+            self.assertEqual(view.r_devices.current.value, "0")
+
     def test_local_ports_refresh_shows_completion_and_requeries(self):
         class PageStub:
             def __init__(self):

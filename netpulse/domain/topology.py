@@ -27,6 +27,11 @@ def build_topology(
     local_addresses: set[str] | None = None,
 ) -> list[TopologySegment]:
     local_addresses = local_addresses or set()
+    inventory_by_id = {item.get("device_id"): item for item in inventory
+                       if item.get("device_id")}
+    for item in inventory:
+        for merged_id in item.get("merged_device_ids", []):
+            inventory_by_id[merged_id] = item
     inventory_by_ip = {item["address"]: item for item in inventory}
     segments: dict[str, TopologySegment] = {}
     for host in scan.hosts:
@@ -36,12 +41,14 @@ def build_topology(
             last_octet = int(str(address).rsplit(".", 1)[-1]) if address.version == 4 else -1
         except ValueError:
             network, last_octet = "Other targets", -1
-        item = inventory_by_ip.get(host.address, {})
+        item = inventory_by_id.get(getattr(host, "device_id", None),
+                                   inventory_by_ip.get(host.address, {}))
         role = "local" if host.address in local_addresses else "router" if last_octet == 1 else "device"
         label = item.get("alias") or host.hostname or item.get("detected_name") or host.address
         segments.setdefault(network, TopologySegment(network)).nodes.append(TopologyNode(
             address=host.address, label=label, role=role,
-            risk_level=host.risk_level, trust_status=item.get("trust_status", "new"),
+            risk_level=host.risk_level,
+            trust_status=item.get("lifecycle_status", item.get("trust_status", "new")),
         ))
     for segment in segments.values():
         segment.nodes.sort(key=lambda node: int(ipaddress.ip_address(node.address))

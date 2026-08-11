@@ -15,7 +15,7 @@ from netpulse.config import (
 from netpulse.domain.state import AppState
 from netpulse.infrastructure.database import DB
 from netpulse.infrastructure.nmap_scanner import NmapScanner
-from netpulse.infrastructure.sniffer import Sniffer
+from netpulse.infrastructure.sniffer import Sniffer, list_interfaces
 from netpulse.services.ip_info import geo_cache
 from .theme import (
     AMBER, BG, BORDER, CARD, CYAN, GREEN, MUTED, RED, SURFACE, TEXT,
@@ -116,10 +116,20 @@ def main(page: ft.Page):
     pkt_v   = PacketsView(state, _page_ref)
     chart_v = ChartsView(state)
     hist_v  = HistoryView(db)
-    proc_v  = ProcessView(state)
+    proc_v  = ProcessView(state, _page_ref)
+    def on_interface_change(value: str):
+        state.interface = value or "All"
+        try:
+            if r_iface.current:
+                r_iface.current.value = state.interface
+                r_iface.current.update()
+        except NameError:
+            pass
+
     sett_v  = SettingsView(
         state, language[0], on_language_change,
         appearance=appearance, on_appearance_change=on_appearance_change,
+        on_interface_change=on_interface_change,
     )
 
     try:
@@ -149,7 +159,7 @@ def main(page: ft.Page):
     r_status = ft.Ref[ft.Text]()
     r_pps_h  = ft.Ref[ft.Text]()
     r_bw_h   = ft.Ref[ft.Text]()
-    r_iface  = ft.Ref[ft.Text]()
+    r_iface  = ft.Ref[ft.Dropdown]()
     r_start  = ft.Ref[ft.Button]()
     r_sb_sess = ft.Ref[ft.Text]()
     r_sb_pkts = ft.Ref[ft.Text]()
@@ -187,6 +197,7 @@ def main(page: ft.Page):
     def _set_header(capturing: bool):
         if r_dot.current:
             r_dot.current.bgcolor = GREEN if capturing else RED
+            r_dot.current.opacity = 1.0
             r_dot.current.update()
         if r_status.current:
             r_status.current.value = "CAPTURING" if capturing else "STOPPED"
@@ -198,8 +209,16 @@ def main(page: ft.Page):
             r_start.current.color   = RED          if capturing else GREEN
             r_start.current.update()
         if r_iface.current:
-            r_iface.current.value = f"[ {state.interface or 'All'} ]"
+            r_iface.current.value = state.interface or "All"
+            r_iface.current.disabled = capturing
             r_iface.current.update()
+        if sett_v._interface_dropdown:
+            sett_v._interface_dropdown.value = state.interface or "All"
+            sett_v._interface_dropdown.disabled = capturing
+            try:
+                sett_v._interface_dropdown.update()
+            except RuntimeError:
+                pass
 
     _capture_start_time = [None]
     _pending_stats = defaultdict(int)
@@ -369,6 +388,30 @@ def main(page: ft.Page):
         ft.VerticalDivider(color=BORDER, width=12, thickness=1),
     ], spacing=7, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
+    interface_options = [ft.DropdownOption("All", "All interfaces")]
+    interface_options.extend(
+        ft.DropdownOption(
+            item["name"],
+            f"{item['name']}  ·  {item['ip']}" + ("" if item["up"] else "  ·  offline"),
+        )
+        for item in list_interfaces()
+    )
+
+    interface_selector = ft.Dropdown(
+        ref=r_iface,
+        value=state.interface or "All",
+        options=interface_options,
+        on_select=lambda e: on_interface_change(e.control.value),
+        width=230,
+        dense=True,
+        text_size=11,
+        bgcolor=CARD,
+        color=TEXT,
+        border_color=BORDER,
+        focused_border_color=CYAN,
+        tooltip="Capture interface",
+    )
+
     header = ft.Container(
         content=ft.Row([
             ft.Container(width=10),
@@ -377,7 +420,7 @@ def main(page: ft.Page):
                          animate=ft.Animation(600, ft.AnimationCurve.EASE_IN_OUT)),
             ft.Text(ref=r_status,  value="STOPPED", size=12, color=RED,
                     weight=ft.FontWeight.W_700),
-            ft.Text(ref=r_iface,   value="[ None ]", size=11, color=MUTED),
+            interface_selector,
             ft.Button(
                 ref=r_start, content="START", on_click=toggle,
                 bgcolor=tint(GREEN, .25), color=GREEN,
@@ -551,12 +594,10 @@ def main(page: ft.Page):
                             pass
 
                 # 2. Pulse dot
-                if state.capturing:
+                if state.capturing and _tick % DATABASE_FLUSH_TICKS == 0:
                     _pulse = not _pulse
                     if r_dot.current:
-                        r_dot.current.opacity = 1.0 if _pulse else 0.4
-                        r_dot.current.width   = 11  if _pulse else 7
-                        r_dot.current.height  = 11  if _pulse else 7
+                        r_dot.current.opacity = 1.0 if _pulse else 0.55
 
                 # 3. Header stats
                 if r_pps_h.current:

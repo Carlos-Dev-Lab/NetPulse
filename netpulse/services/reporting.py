@@ -34,22 +34,37 @@ def _inventory_by_address(inventory: list[dict]) -> dict[str, dict]:
     return {item.get("address", ""): item for item in inventory}
 
 
+def _inventory_for_host(host, inventory: list[dict], by_ip: dict[str, dict]) -> dict:
+    if getattr(host, "device_id", None):
+        item = next((entry for entry in inventory
+                     if entry.get("device_id") == host.device_id
+                     or host.device_id in entry.get("merged_device_ids", [])), None)
+        if item:
+            return item
+    return by_ip.get(host.address, {})
+
+
 def _write_csv(path: Path, scan: NetworkScan, inventory: list[dict]) -> None:
     by_ip = _inventory_by_address(inventory)
     with path.open("w", newline="", encoding="utf-8-sig") as stream:
         writer = csv.writer(stream)
         writer.writerow([
-            "ip", "mac", "hostname", "alias", "tipo", "propietario", "ubicacion",
-            "confianza", "riesgo", "puerto", "protocolo", "servicio", "producto", "version",
+            "asset_id", "ip", "mac", "hostname", "alias", "tipo", "propietario",
+            "ubicacion", "confianza", "ciclo_vida", "criticidad", "confianza_identidad", "etiquetas",
+            "riesgo", "puerto", "protocolo", "servicio", "producto", "version",
         ])
         for host in scan.hosts:
-            item = by_ip.get(host.address, {})
+            item = _inventory_for_host(host, inventory, by_ip)
             services = host.open_ports or [None]
             for service in services:
                 writer.writerow([
-                    host.address, host.mac, host.hostname, item.get("alias", ""),
+                    item.get("device_id", host.device_id or ""), host.address, host.mac,
+                    host.hostname, item.get("alias", ""),
                     item.get("device_type", ""), item.get("owner", ""),
                     item.get("location", ""), item.get("trust_status", "new"),
+                    item.get("lifecycle_status", item.get("trust_status", "new")),
+                    item.get("criticality", "medium"), item.get("identity_confidence", "low"),
+                    item.get("tags", ""),
                     host.risk_level, service.port if service else "",
                     service.protocol if service else "", service.name if service else "",
                     service.product if service else "", service.version if service else "",
@@ -65,11 +80,11 @@ def _write_html(
     by_ip = _inventory_by_address(inventory)
     rows = []
     for host in scan.hosts:
-        item = by_ip.get(host.address, {})
+        item = _inventory_for_host(host, inventory, by_ip)
         ports = ", ".join(f"{s.port}/{s.protocol} {s.name}" for s in host.open_ports) or "Sin puertos abiertos"
         rows.append(
             f"<tr><td><code>{escape(host.address)}</code></td><td>{escape(item.get('alias') or host.hostname or '-')}</td>"
-            f"<td>{escape(item.get('trust_status', 'new'))}</td><td class='{escape(host.risk_level)}'>{escape(host.risk_level.upper())}</td>"
+            f"<td>{escape(item.get('lifecycle_status', item.get('trust_status', 'new')))}</td><td class='{escape(host.risk_level)}'>{escape(host.risk_level.upper())}</td>"
             f"<td>{escape(ports)}</td></tr>"
         )
     diagnostic_rows = "".join(
@@ -165,10 +180,10 @@ def _write_pdf(
                     Paragraph("Inventario y servicios", heading)]
     data = [["IP", "Nombre", "Confianza", "Riesgo", "Servicios abiertos"]]
     for host in scan.hosts:
-        item = by_ip.get(host.address, {})
+        item = _inventory_for_host(host, inventory, by_ip)
         ports = ", ".join(f"{s.port}/{s.protocol} {s.name}" for s in host.open_ports) or "Ninguno"
         data.append([Paragraph(escape(host.address), small), Paragraph(escape(item.get("alias") or host.hostname or "-"), small),
-                     Paragraph(escape(item.get("trust_status", "new")), small), host.risk_level.upper(), Paragraph(escape(ports), small)])
+                     Paragraph(escape(item.get("lifecycle_status", item.get("trust_status", "new"))), small), host.risk_level.upper(), Paragraph(escape(ports), small)])
     inventory_table = Table(data, colWidths=[27*mm, 35*mm, 24*mm, 18*mm, 70*mm], repeatRows=1)
     inventory_table.setStyle(TableStyle([
         ("BACKGROUND", (0,0), (-1,0), navy), ("TEXTCOLOR", (0,0), (-1,0), colors.white),

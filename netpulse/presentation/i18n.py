@@ -16,6 +16,18 @@ ES = {
     "Network overview": "Resumen de red",
     "Live traffic, system health and active connections": "Tráfico en vivo, estado del sistema y conexiones activas",
     "Network discovery": "Descubrimiento de red",
+    "Scan": "Escaneo", "Assets": "Activos", "Diagnostics": "Diagnóstico",
+    "Map": "Mapa", "Automation": "Automatización",
+    "WHAT DO YOU WANT TO DO?": "¿QUÉ QUIERES HACER?",
+    "NEW SCAN": "NUEVO ESCANEO",
+    "VIEW PREVIOUS SCAN": "VER ESCANEO ANTERIOR",
+    "PREVIOUS SCANS": "ESCANEOS ANTERIORES",
+    "Choose previous scan": "Elegir escaneo anterior",
+    "Search by date, target, ID or risk": "Buscar por fecha, objetivo, ID o riesgo",
+    "Type to filter the saved scans": "Escribe para filtrar los escaneos guardados",
+    "Choose a stored result to load it into the other tabs.":
+        "Elige un resultado guardado para cargarlo en las demás pestañas.",
+    "No previous scan selected.": "No hay ningún escaneo anterior seleccionado.",
     "Inventory devices, exposed services and topology changes": "Inventario de dispositivos, servicios expuestos y cambios de topología",
     "Packet explorer": "Explorador de paquetes",
     "Inspect, filter and export the live packet stream": "Inspecciona, filtra y exporta el flujo de paquetes en vivo",
@@ -25,6 +37,42 @@ ES = {
     "Compare stored captures and review their top endpoints": "Compara capturas guardadas y sus principales destinos",
     "Application traffic": "Tráfico por aplicación",
     "See which local processes consume network bandwidth": "Consulta qué procesos locales consumen ancho de banda",
+    "Understand which applications communicate, where and how much": "Comprende qué aplicaciones se comunican, con quién y cuánto tráfico generan",
+    "ACTIVE NOW": "ACTIVAS AHORA", "DOWNLOADED": "DESCARGADO",
+    "UPLOADED": "SUBIDO", "DESTINATIONS": "DESTINOS",
+    "TOP APPLICATION": "APLICACIÓN PRINCIPAL",
+    "WHAT IS USING YOUR NETWORK": "QUÉ ESTÁ USANDO TU RED",
+    "Search application, PID, domain or IP": "Buscar aplicación, PID, dominio o IP",
+    "All applications": "Todas las aplicaciones", "Active now": "Activas ahora",
+    "Highest download": "Mayor descarga", "Highest upload": "Mayor subida",
+    "Unidentified processes": "Procesos sin identificar",
+    "Application": "Aplicación", "Download": "Descarga", "Upload": "Subida",
+    "Activity": "Actividad",
+    "applications": "aplicaciones", "instances": "instancias",
+    "active": "activas", "Inactive": "Inactiva", "ACTIVE": "ACTIVA",
+    "INACTIVE": "INACTIVA", "destinations": "destinos",
+    "PROCESS INSTANCES": "INSTANCIAS DEL PROCESO",
+    "WHAT CAN BE SEEN": "QUÉ SE PUEDE OBSERVAR",
+    "TRAFFIC INSIGHTS": "ANÁLISIS DEL TRÁFICO",
+    "SPIKE HISTORY": "HISTORIAL DE PICOS",
+    "REMOTE CONNECTIONS": "CONEXIONES REMOTAS",
+    "Network spike detected": "Pico de red detectado",
+    "Real-time UDP pattern": "Patrón UDP en tiempo real",
+    "Upload-heavy activity": "Actividad con mucha subida",
+    "Unencrypted HTTP observed": "Se observó HTTP sin cifrar",
+    "Many remote destinations": "Muchos destinos remotos",
+    "No notable pattern detected": "No se detectó un patrón destacable",
+    "No significant spikes recorded in this session.": "No se registraron picos importantes en esta sesión.",
+    "RECENT": "RECIENTE",
+    "No application traffic available": "Todavía no hay tráfico de aplicaciones",
+    "Start monitoring and generate network activity.": "Inicia el monitoreo y genera actividad de red.",
+    "Open application network details": "Abrir detalles de red de la aplicación",
+    "APPLICATION NETWORK ACTIVITY": "ACTIVIDAD DE RED DE LA APLICACIÓN",
+    "Executable path unavailable": "Ruta del ejecutable no disponible",
+    "PACKETS": "PAQUETES", "Protocols: ": "Protocolos: ",
+    "RECENT PACKET EVIDENCE": "EVIDENCIA RECIENTE DE PAQUETES",
+    "No destination information available.": "No hay información de destinos disponible.",
+    "No matching packets remain in the live buffer.": "No quedan paquetes coincidentes en el búfer en vivo.",
     "System settings": "Ajustes del sistema",
     "Capture source, alert thresholds and local storage": "Fuente de captura, alertas y almacenamiento local",
     "APPEARANCE": "APARIENCIA",
@@ -81,6 +129,17 @@ ES = {
     "Owner": "Propietario", "Location": "Ubicación", "Notes": "Notas",
     "Trust status": "Estado de confianza", "Cancel": "Cancelar",
     "Save device": "Guardar dispositivo",
+    "ENTERPRISE ASSET INVENTORY": "INVENTARIO EMPRESARIAL DE ACTIVOS",
+    "Run a scan to build the asset inventory.": "Ejecuta un análisis para crear el inventario de activos.",
+    "No assets observed yet.": "Todavía no se observaron activos.",
+    "POSSIBLE DUPLICATES — HUMAN REVIEW REQUIRED": "POSIBLES DUPLICADOS — REQUIEREN REVISIÓN HUMANA",
+    "MERGE": "FUSIONAR", "DISMISS": "DESCARTAR", "MERGED ASSETS": "ACTIVOS FUSIONADOS",
+    "SEPARATE": "SEPARAR", "Edit asset": "Editar activo",
+    "Asset lifecycle": "Ciclo de vida del activo",
+    "Business criticality": "Criticidad empresarial",
+    "Tags (comma separated)": "Etiquetas (separadas por comas)",
+    "Enterprise asset management": "Gestión empresarial del activo",
+    "RECENT ASSET EVENTS": "EVENTOS RECIENTES DEL ACTIVO",
     "BEFORE VS NOW": "ANTES VS. AHORA",
     "A previous scan is required for comparison.": "Se necesita un análisis anterior para comparar.",
     "No comparison available.": "No hay una comparación disponible.",
@@ -155,6 +214,7 @@ ES = {
     "CHANGES ONLY": "SOLO CAMBIOS", "ALWAYS": "SIEMPRE",
     "NEW": "NUEVO", "KNOWN": "CONOCIDO", "AUTHORIZED": "AUTORIZADO",
     "BLOCKED": "BLOQUEADO", "UNKNOWN": "DESCONOCIDO",
+    "OBSERVING": "EN OBSERVACIÓN", "RETIRED": "RETIRADO", "STALE": "OBSOLETO",
     "EXCELLENT": "EXCELENTE", "GOOD": "BUENA", "ATTENTION": "ATENCIÓN",
     "CRITICAL": "CRÍTICA", "RESOLVED": "RESUELTO",
     "HIGH": "ALTO", "MEDIUM": "MEDIO", "LOW": "BAJO",
@@ -412,13 +472,26 @@ def translate_tree(control, language: str, seen=None) -> None:
     if id(control) in seen:
         return
     seen.add(id(control))
-    for attr in ("value", "label", "hint_text", "content", "text", "tooltip", "error_text"):
+    for attr in (
+        "value", "label", "hint_text", "helper_text", "content", "text",
+        "tooltip", "error_text",
+    ):
         value = getattr(control, attr, None)
         if isinstance(value, str):
-            setattr(control, attr, _translate(value, language))
+            translated = _translate(value, language)
+            if translated == value:
+                continue
+            try:
+                setattr(control, attr, translated)
+            except RuntimeError as exc:
+                # Flet uses frozen value controls (for example Tab and some
+                # options). Their child controls can still be translated; a
+                # frozen label must never break navigation.
+                if "frozen controls" not in str(exc).lower():
+                    raise
     for attr in (
         "content", "controls", "destinations", "options", "leading", "trailing",
-        "icon", "selected_icon", "title", "subtitle", "actions",
+        "icon", "selected_icon", "title", "subtitle", "label", "actions", "tabs",
     ):
         child = getattr(control, attr, None)
         if isinstance(child, (list, tuple)):

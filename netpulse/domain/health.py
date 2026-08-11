@@ -37,7 +37,14 @@ def _level(score: int) -> str:
 def calculate_network_health(scan: NetworkScan, inventory: list[dict]) -> NetworkHealth:
     """Return a 0-100 score and every evidence-backed deduction."""
     factors: list[HealthFactor] = []
+    by_id = {item.get("device_id"): item for item in inventory if item.get("device_id")}
+    for item in inventory:
+        for merged_id in item.get("merged_device_ids", []):
+            by_id[merged_id] = item
     by_ip = {item.get("address", ""): item for item in inventory}
+
+    def asset_for(host):
+        return by_id.get(getattr(host, "device_id", None), by_ip.get(host.address, {}))
 
     high_services = sum(
         service.risk_level == "high" for host in scan.hosts for service in host.open_ports
@@ -59,7 +66,9 @@ def calculate_network_health(scan: NetworkScan, inventory: list[dict]) -> Networ
         ))
 
     unclassified = [host.address for host in scan.hosts
-                    if by_ip.get(host.address, {}).get("trust_status", "new") == "new"]
+                    if asset_for(host).get("lifecycle_status",
+                                           asset_for(host).get("trust_status", "new"))
+                    in {"new", "observing"}]
     if unclassified:
         deduction = min(20, len(unclassified) * 5)
         factors.append(HealthFactor(
@@ -67,7 +76,8 @@ def calculate_network_health(scan: NetworkScan, inventory: list[dict]) -> Networ
             f"{len(unclassified)} device(s) remain new in inventory, 5 points each (maximum 20).", "medium",
         ))
     blocked = [host.address for host in scan.hosts
-               if by_ip.get(host.address, {}).get("trust_status") == "blocked"]
+               if asset_for(host).get("lifecycle_status",
+                                      asset_for(host).get("trust_status")) == "blocked"]
     if blocked:
         deduction = min(40, len(blocked) * 20)
         factors.append(HealthFactor(

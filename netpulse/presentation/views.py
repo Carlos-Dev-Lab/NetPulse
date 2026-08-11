@@ -402,6 +402,8 @@ class NetworkView:
         self.r_comparison = ft.Ref[ft.Column]()
         self.r_local_ports = ft.Ref[ft.Column]()
         self.r_local_ports_summary = ft.Ref[ft.Text]()
+        self.r_asset_summary = ft.Ref[ft.Text]()
+        self.r_asset_list = ft.Ref[ft.Column]()
         self._running = False
         self._scan_row = None
         self._summary_row = None
@@ -416,6 +418,11 @@ class NetworkView:
         self._automation_card = None
         self._health_card = None
         self._local_ports_card = None
+        self._asset_card = None
+        self._network_tabs = None
+        self._scan_mode_content = None
+        self._new_scan_button = None
+        self._history_scan_button = None
         self._topology_nodes = []
         self._topology_grids = []
         self._viewport_content_width = 1000.0
@@ -475,6 +482,27 @@ class NetworkView:
                 ], spacing=10),
                 glow=color, padding=14,
             )
+
+        def tab_section(title, subtitle, icon, color, body):
+            """Section used inside a network tab; content stays visible."""
+            subtitle_control = subtitle if isinstance(subtitle, ft.Control) else ft.Text(
+                subtitle, size=10, color=MUTED,
+            )
+            return card(ft.Column([
+                ft.Row([
+                    ft.Container(
+                        ft.Icon(icon, color=color, size=20),
+                        bgcolor=tint(color, .09), border_radius=10, padding=8,
+                    ),
+                    ft.Column([
+                        ft.Text(title, size=11, color=TEXT,
+                                weight=ft.FontWeight.W_700),
+                        subtitle_control,
+                    ], spacing=2, expand=True),
+                ], spacing=9),
+                ft.Divider(color=BORDER, height=8),
+                body,
+            ], spacing=7), padding=12)
 
         profile_options = [
             ft.DropdownOption(key=key, text=tr(value["label"]))
@@ -580,72 +608,67 @@ class NetworkView:
             ft.Button(content="SEARCH", icon=ft.Icons.SEARCH_ROUNDED,
                       on_click=on_search, color=CYAN, bgcolor=tint(CYAN, .13)),
         ], spacing=9, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=10)
-        self._history_card = card(ft.Row([
-            ft.Dropdown(
-                ref=self.r_history, label="Scan history", options=[],
-                on_select=on_history, width=300, bgcolor=SURFACE, color=TEXT,
-                border_color=BORDER, focused_border_color=CYAN, text_size=12,
-            ),
-            ft.Button(content="EXPORT REPORT", icon=ft.Icons.FILE_DOWNLOAD_ROUNDED,
-                      on_click=on_export, color=GREEN, bgcolor=tint(GREEN, .10)),
-            ft.Text(ref=self.r_metadata, value="No scans yet", size=11, color=MUTED),
-        ], spacing=12, wrap=True, run_spacing=8), padding=12)
-        self._diagnostic_card = card(ft.ExpansionTile(
-            title=ft.Text("DIAGNOSTIC CENTER", size=11, color=TEXT,
-                          weight=ft.FontWeight.W_700),
-            subtitle=ft.Text(ref=self.r_diagnostic_summary,
-                             value="Run two scans to compare changes.", size=10, color=MUTED),
-            leading=ft.Icon(ft.Icons.HEALTH_AND_SAFETY_ROUNDED, color=CYAN, size=20),
-            controls=[ft.Column(
+        self._history_card = card(ft.Column([
+            ft.Row([
+                ft.Icon(ft.Icons.HISTORY_ROUNDED, color=PURPLE, size=20),
+                ft.Column([
+                    ft.Text("PREVIOUS SCANS", size=11, color=TEXT,
+                            weight=ft.FontWeight.W_700),
+                    ft.Text("Choose a stored result to load it into the other tabs.",
+                            size=10, color=MUTED),
+                ], spacing=2),
+            ], spacing=8),
+            ft.Row([
+                ft.Dropdown(
+                    ref=self.r_history, label="Choose previous scan", options=[],
+                    hint_text="Search by date, target, ID or risk",
+                    helper_text="Type to filter the saved scans",
+                    editable=True, enable_filter=True, enable_search=True,
+                    menu_height=320, menu_width=680,
+                    leading_icon=ft.Icons.SEARCH_ROUNDED,
+                    on_select=on_history, width=520, bgcolor=SURFACE, color=TEXT,
+                    border_color=BORDER, focused_border_color=CYAN, text_size=12,
+                ),
+                ft.Button(content="EXPORT REPORT", icon=ft.Icons.FILE_DOWNLOAD_ROUNDED,
+                          on_click=on_export, color=GREEN, bgcolor=tint(GREEN, .10)),
+            ], spacing=12, wrap=True, run_spacing=8),
+            ft.Text(ref=self.r_metadata, value="No previous scan selected.",
+                    size=11, color=MUTED),
+        ], spacing=10), padding=12)
+        self._diagnostic_card = tab_section(
+            "DIAGNOSTIC CENTER",
+            ft.Text(ref=self.r_diagnostic_summary,
+                    value="Run two scans to compare changes.", size=10, color=MUTED),
+            ft.Icons.HEALTH_AND_SAFETY_ROUNDED, CYAN,
+            ft.Column(
                 ref=self.r_diagnostic_list,
                 controls=[ft.Text("No diagnostic information yet.", color=MUTED, size=11)],
                 spacing=8,
-            )],
-            controls_padding=ft.padding.Padding.only(left=12, right=12, bottom=12),
-            tile_padding=ft.padding.Padding.symmetric(horizontal=4, vertical=2),
-            text_color=TEXT, icon_color=CYAN, collapsed_text_color=TEXT,
-            collapsed_icon_color=CYAN, maintain_state=True, expanded=True,
-        ), padding=8)
-        self._topology_card = card(ft.ExpansionTile(
-            title=ft.Text("NETWORK MAP", size=11, color=TEXT,
-                          weight=ft.FontWeight.W_700),
-            subtitle=ft.Text(ref=self.r_topology_summary,
-                             value="Segments and connections overview",
-                             size=10, color=MUTED),
-            leading=ft.Icon(ft.Icons.ACCOUNT_TREE_ROUNDED, color=CYAN, size=20),
-            controls=[ft.Column(
+            ))
+        self._topology_card = tab_section(
+            "NETWORK MAP",
+            ft.Text(ref=self.r_topology_summary,
+                    value="Segments and connections overview", size=10, color=MUTED),
+            ft.Icons.ACCOUNT_TREE_ROUNDED, CYAN,
+            ft.Column(
                 ref=self.r_topology, spacing=10,
                 controls=[ft.Text("Run a scan to build the network map.", color=MUTED)],
-            )],
-            controls_padding=ft.padding.Padding.only(left=12, right=12, bottom=12),
-            tile_padding=ft.padding.Padding.symmetric(horizontal=4, vertical=2),
-            text_color=TEXT, icon_color=CYAN, collapsed_text_color=TEXT,
-            collapsed_icon_color=CYAN, maintain_state=True, expanded=True,
-        ), padding=8)
-        self._comparison_card = card(ft.ExpansionTile(
-            title=ft.Text("BEFORE VS NOW", size=11, color=TEXT,
-                          weight=ft.FontWeight.W_700),
-            subtitle=ft.Text(ref=self.r_comparison_summary,
-                             value="A previous scan is required for comparison.",
-                             size=10, color=MUTED),
-            leading=ft.Icon(ft.Icons.COMPARE_ARROWS_ROUNDED, color=PURPLE, size=20),
-            controls=[ft.Column(
+            ))
+        self._comparison_card = tab_section(
+            "BEFORE VS NOW",
+            ft.Text(ref=self.r_comparison_summary,
+                    value="A previous scan is required for comparison.", size=10, color=MUTED),
+            ft.Icons.COMPARE_ARROWS_ROUNDED, PURPLE,
+            ft.Column(
                 ref=self.r_comparison,
                 controls=[ft.Text("No comparison available.", color=MUTED, size=11)],
                 spacing=8,
-            )],
-            controls_padding=ft.padding.Padding.only(left=12, right=12, bottom=12),
-            tile_padding=ft.padding.Padding.symmetric(horizontal=4, vertical=2),
-            text_color=TEXT, icon_color=PURPLE, collapsed_text_color=TEXT,
-            collapsed_icon_color=PURPLE, maintain_state=True, expanded=False,
-        ), padding=8)
-        self._automation_card = card(ft.ExpansionTile(
-            title=ft.Text("PROFILES AND SCHEDULES", size=11, color=TEXT,
-                          weight=ft.FontWeight.W_700),
-            subtitle=ft.Text("Save network groups and automate recurring scans",
-                             size=10, color=MUTED),
-            leading=ft.Icon(ft.Icons.SCHEDULE_ROUNDED, color=BLUE, size=20),
-            controls=[ft.Column([
+            ))
+        self._automation_card = tab_section(
+            "PROFILES AND SCHEDULES",
+            "Save network groups and automate recurring scans",
+            ft.Icons.SCHEDULE_ROUNDED, BLUE,
+            ft.Column([
                 ft.Row([
                     ft.Dropdown(
                         ref=self.r_saved_profile, label="Saved profile", options=[],
@@ -668,39 +691,36 @@ class NetworkView:
                     controls=[ft.Text("No scheduled scans.", color=MUTED, size=10)],
                     spacing=6,
                 ),
-            ], spacing=8)],
-            controls_padding=ft.padding.Padding.only(left=12, right=12, bottom=12),
-            tile_padding=ft.padding.Padding.symmetric(horizontal=4, vertical=2),
-            text_color=TEXT, icon_color=BLUE, collapsed_text_color=TEXT,
-            collapsed_icon_color=BLUE, maintain_state=True, expanded=False,
-        ), padding=8)
-        self._health_card = card(ft.ExpansionTile(
-            title=ft.Text("NETWORK HEALTH DETAILS", size=11, color=TEXT,
-                          weight=ft.FontWeight.W_700),
-            subtitle=ft.Text(ref=self.r_health_summary,
-                             value="Run a scan to calculate network health.",
-                             size=10, color=MUTED),
-            leading=ft.Icon(ft.Icons.MONITOR_HEART_ROUNDED, color=BLUE, size=20),
-            controls=[ft.Column(
+            ], spacing=8))
+        self._health_card = tab_section(
+            "NETWORK HEALTH DETAILS",
+            ft.Text(ref=self.r_health_summary,
+                    value="Run a scan to calculate network health.", size=10, color=MUTED),
+            ft.Icons.MONITOR_HEART_ROUNDED, BLUE,
+            ft.Column(
                 ref=self.r_health_factors,
                 controls=[ft.Text("No health assessment yet.", color=MUTED, size=10)],
                 spacing=7,
-            )],
-            controls_padding=ft.padding.Padding.only(left=12, right=12, bottom=12),
-            tile_padding=ft.padding.Padding.symmetric(horizontal=4, vertical=2),
-            text_color=TEXT, icon_color=BLUE, collapsed_text_color=TEXT,
-            collapsed_icon_color=BLUE, maintain_state=True, expanded=False,
-        ), padding=8)
-        self._local_ports_card = card(ft.ExpansionTile(
-            title=ft.Text("LOCAL PORT INSPECTOR", size=11, color=TEXT,
-                          weight=ft.FontWeight.W_700),
-            subtitle=ft.Text(
+            ))
+        self._asset_card = tab_section(
+            "ENTERPRISE ASSET INVENTORY",
+            ft.Text(ref=self.r_asset_summary,
+                    value="Run a scan to build the asset inventory.", size=10, color=MUTED),
+            ft.Icons.INVENTORY_2_ROUNDED, CYAN,
+            ft.Column(
+                ref=self.r_asset_list,
+                controls=[ft.Text("No assets observed yet.", color=MUTED, size=10)],
+                spacing=7,
+            ))
+        self._local_ports_card = tab_section(
+            "LOCAL PORT INSPECTOR",
+            ft.Text(
                 ref=self.r_local_ports_summary,
                 value="Check which ports are listening on this computer.",
                 size=10, color=MUTED,
             ),
-            leading=ft.Icon(ft.Icons.PRIVACY_TIP_OUTLINED, color=PURPLE, size=20),
-            controls=[ft.Column([
+            ft.Icons.PRIVACY_TIP_OUTLINED, PURPLE,
+            ft.Column([
                 ft.Container(
                     content=ft.Row([
                         ft.Icon(ft.Icons.INFO_OUTLINE_ROUNDED, color=BLUE, size=16),
@@ -722,35 +742,87 @@ class NetworkView:
                                       color=MUTED, size=10)],
                     spacing=6,
                 ),
-            ], spacing=8)],
-            controls_padding=ft.padding.Padding.only(left=12, right=12, bottom=12),
-            tile_padding=ft.padding.Padding.symmetric(horizontal=4, vertical=2),
-            text_color=TEXT, icon_color=PURPLE, collapsed_text_color=TEXT,
-            collapsed_icon_color=PURPLE, maintain_state=True, expanded=False,
-        ), padding=8)
+            ], spacing=8))
         self._reload_profiles_and_schedules()
+
+        def select_scan_mode(mode: str):
+            showing_history = mode == "history"
+            if not showing_history:
+                self._reset_scan_results()
+            self._scan_mode_content.content = (
+                self._history_card if showing_history else self._scan_card
+            )
+            self._new_scan_button.color = MUTED if showing_history else CYAN
+            self._new_scan_button.bgcolor = (
+                tint(MUTED, .05) if showing_history else tint(CYAN, .17)
+            )
+            self._history_scan_button.color = CYAN if showing_history else MUTED
+            self._history_scan_button.bgcolor = (
+                tint(CYAN, .17) if showing_history else tint(MUTED, .05)
+            )
+            self._safe_page_update()
+
+        self._new_scan_button = ft.Button(
+            content="NEW SCAN", icon=ft.Icons.ADD_CHART_ROUNDED, expand=True,
+            color=CYAN, bgcolor=tint(CYAN, .17),
+            on_click=lambda e: select_scan_mode("new"),
+        )
+        self._history_scan_button = ft.Button(
+            content="VIEW PREVIOUS SCAN", icon=ft.Icons.HISTORY_ROUNDED, expand=True,
+            color=MUTED, bgcolor=tint(MUTED, .05),
+            on_click=lambda e: select_scan_mode("history"),
+        )
+        scan_mode_selector = card(ft.Column([
+            ft.Text("WHAT DO YOU WANT TO DO?", size=10, color=DIM,
+                    weight=ft.FontWeight.W_700),
+            ft.Row([self._new_scan_button, self._history_scan_button], spacing=8),
+        ], spacing=8), padding=10)
+        self._scan_mode_content = ft.Container(content=self._scan_card)
+        scan_workspace = ft.Column([
+            scan_mode_selector, self._scan_mode_content,
+        ], spacing=12)
+
+        def tab_page(*controls):
+            return ft.Column(
+                list(controls), spacing=12, scroll=ft.ScrollMode.AUTO,
+                expand=True,
+            )
+
+        self._network_tabs = ft.Tabs(
+            length=5, selected_index=0, expand=True,
+            animation_duration=180,
+            content=ft.Column([
+                ft.TabBar(
+                    tabs=[
+                        ft.Tab(label=ft.Text("Scan"), icon=ft.Icons.RADAR_ROUNDED),
+                        ft.Tab(label=ft.Text("Assets"), icon=ft.Icons.INVENTORY_2_ROUNDED),
+                        ft.Tab(label=ft.Text("Diagnostics"), icon=ft.Icons.HEALTH_AND_SAFETY_ROUNDED),
+                        ft.Tab(label=ft.Text("Map"), icon=ft.Icons.ACCOUNT_TREE_ROUNDED),
+                        ft.Tab(label=ft.Text("Automation"), icon=ft.Icons.SCHEDULE_ROUNDED),
+                    ],
+                    scrollable=False, tab_alignment=ft.TabAlignment.FILL,
+                    indicator_color=CYAN, label_color=CYAN,
+                    unselected_label_color=MUTED, divider_color=BORDER,
+                    label_text_style=ft.TextStyle(size=11, weight=ft.FontWeight.W_600),
+                ),
+                ft.TabBarView([
+                    tab_page(scan_workspace),
+                    tab_page(self._asset_card),
+                    tab_page(self._health_card, self._diagnostic_card, self._comparison_card,
+                             self._local_ports_card),
+                    tab_page(self._topology_card),
+                    tab_page(self._automation_card),
+                ], expand=True),
+            ], spacing=8, expand=True),
+        )
 
         return ft.Column([
             view_heading("Network discovery", "Inventory devices, exposed services and topology changes",
                          ft.Icons.HUB_ROUNDED, CYAN),
             self._search_card,
-            self._scan_card,
-
             self._summary_row,
-
-            self._health_card,
-
-            self._history_card,
-
-            self._automation_card,
-
-            self._comparison_card,
-
-            self._diagnostic_card,
-
-            self._topology_card,
-
-        ], spacing=12, scroll=ft.ScrollMode.AUTO, expand=True)
+            self._network_tabs,
+        ], spacing=12, expand=True)
 
     def set_viewport(self, width: float, height: float):
         content_width = max(300.0, width - 28.0)
@@ -771,6 +843,9 @@ class NetworkView:
         self._search_card.width = content_width
         self._automation_card.width = content_width
         self._health_card.width = content_width
+        self._asset_card.width = content_width
+        self._local_ports_card.width = content_width
+        self._network_tabs.width = content_width
 
         summary_count = 5 if mode == "wide" else 2 if mode == "compact" else 1
         summary_width = (content_width - 12 * (summary_count - 1)) / summary_count
@@ -1150,6 +1225,7 @@ class NetworkView:
         self._render_comparison(previous, scan)
         self._render_topology(scan)
         self._render_health(scan)
+        self._render_asset_workspace(scan)
         changes = sum(1 for finding in scan.findings if finding.kind != "exposed_service")
         self.r_changes.current.value = str(changes)
         self.r_metadata.current.value = (
@@ -1212,6 +1288,126 @@ class NetworkView:
 
         if self.r_device_list.current:
             translate_tree(self.r_device_list.current, get_language())
+
+    def _render_asset_workspace(self, scan):
+        if not self.r_asset_list.current:
+            return
+        online_ids = {host.device_id for host in scan.hosts if host.device_id}
+        summary = self.db.asset_attention_summary(online_ids)
+        self.r_asset_summary.current.value = (
+            f"{summary['new']} new · {summary['unclassified']} review pending · "
+            f"{summary['critical']} critical · {summary['blocked_online']} blocked online · "
+            f"{summary['missing']} missing · {summary['pending_merges']} possible duplicate(s)"
+        )
+        controls = []
+        for item in sorted(
+            self.db.list_inventory(),
+            key=lambda asset: (
+                asset["lifecycle_status"] not in {"blocked", "new"},
+                asset["criticality"] not in {"critical", "high"},
+                not asset["review_required"], asset["address"],
+            ),
+        ):
+            status = item["lifecycle_status"]
+            color = (RED if status == "blocked" else AMBER if status in {"new", "observing"}
+                     else MUTED if status in {"retired", "stale"} else GREEN)
+            controls.append(ft.Container(
+                content=ft.Row([
+                    ft.Container(
+                        content=ft.Text(f"#{item['device_id']}", color=color, size=10,
+                                        weight=ft.FontWeight.W_700),
+                        width=48, alignment=ft.Alignment.CENTER,
+                    ),
+                    ft.Column([
+                        ft.Text(item["alias"] or item["detected_name"] or item["address"],
+                                color=TEXT, size=10, weight=ft.FontWeight.W_700),
+                        ft.Text(
+                            f"{item['address']} · {item['identity_confidence']} identity · "
+                            f"{item['criticality']} criticality · {item['owner'] or 'unassigned'}",
+                            color=MUTED, size=9,
+                        ),
+                    ], spacing=2, expand=True),
+                    ft.Text(status.upper(), color=color, size=9,
+                            weight=ft.FontWeight.W_700),
+                    ft.IconButton(
+                        icon=ft.Icons.EDIT_NOTE_ROUNDED, icon_color=CYAN, icon_size=16,
+                        tooltip="Edit asset", on_click=lambda e, address=item["address"]:
+                            self._edit_inventory(address),
+                    ),
+                ], spacing=8),
+                bgcolor=tint(color, .035), border=ft.Border.all(1, tint(color, .14)),
+                border_radius=8, padding=8,
+            ))
+
+        suggestions = self.db.list_merge_suggestions()
+        if suggestions:
+            controls.insert(0, ft.Text("POSSIBLE DUPLICATES — HUMAN REVIEW REQUIRED",
+                                       color=AMBER, size=9, weight=ft.FontWeight.W_700))
+        for suggestion in suggestions:
+            reasons = ", ".join(suggestion["reasons"])
+            controls.insert(1, ft.Container(
+                content=ft.Row([
+                    ft.Icon(ft.Icons.COMPARE_ARROWS_ROUNDED, color=AMBER, size=17),
+                    ft.Column([
+                        ft.Text(
+                            f"#{suggestion['device_a_id']} {suggestion['alias_a'] or suggestion['address_a']} "
+                            f"↔ #{suggestion['device_b_id']} {suggestion['alias_b'] or suggestion['address_b']}",
+                            color=TEXT, size=10, weight=ft.FontWeight.W_700,
+                        ),
+                        ft.Text(f"{suggestion['score']}% · {reasons}", color=MUTED, size=9),
+                    ], spacing=2, expand=True),
+                    ft.Button(
+                        "MERGE", color=GREEN, bgcolor=tint(GREEN, .10),
+                        on_click=lambda e, s=suggestion: self._accept_asset_merge(s),
+                    ),
+                    ft.TextButton(
+                        "DISMISS", on_click=lambda e, sid=suggestion["id"]:
+                            self._dismiss_asset_merge(sid),
+                    ),
+                ], spacing=7),
+                bgcolor=tint(AMBER, .045), border=ft.Border.all(1, tint(AMBER, .18)),
+                border_radius=8, padding=8,
+            ))
+
+        merged = self.db.list_merged_assets()
+        if merged:
+            controls.append(ft.Text("MERGED ASSETS", color=MUTED, size=9,
+                                    weight=ft.FontWeight.W_700))
+        for link in merged:
+            controls.append(ft.Row([
+                ft.Text(
+                    f"#{link['source_device_id']} {link['source_alias'] or link['source_address']} "
+                    f"→ #{link['target_device_id']} {link['target_alias'] or link['target_address']}",
+                    color=MUTED, size=9, expand=True,
+                ),
+                ft.TextButton(
+                    "SEPARATE", on_click=lambda e, source=link["source_device_id"]:
+                        self._separate_asset(source),
+                ),
+            ], spacing=7))
+        self.r_asset_list.current.controls = controls or [
+            ft.Text("No assets observed yet.", color=MUTED, size=10)
+        ]
+
+    def _accept_asset_merge(self, suggestion):
+        self.db.merge_assets(
+            suggestion["device_a_id"], suggestion["device_b_id"], suggestion["id"]
+        )
+        if self._current_scan:
+            self._render_asset_workspace(self._current_scan)
+            self._safe_page_update()
+
+    def _dismiss_asset_merge(self, suggestion_id: int):
+        self.db.dismiss_merge_suggestion(suggestion_id)
+        if self._current_scan:
+            self._render_asset_workspace(self._current_scan)
+            self._safe_page_update()
+
+    def _separate_asset(self, source_device_id: int):
+        self.db.separate_asset(source_device_id)
+        if self._current_scan:
+            self._render_asset_workspace(self._current_scan)
+            self._safe_page_update()
 
     def _render_health(self, scan):
         health = calculate_network_health(scan, self.db.list_inventory())
@@ -1623,11 +1819,53 @@ class NetworkView:
                      ("new", "known", "authorized", "blocked")],
             leading_icon=ft.Icons.VERIFIED_USER_OUTLINED,
             color=TEXT, label_style=ft.TextStyle(color=MUTED, size=10),
-            filled=True, fill_color=tint(CYAN, .035), bgcolor=tint(CYAN, .035),
+            filled=True, fill_color=CARD, bgcolor=CARD,
+            menu_style=ft.MenuStyle(
+                bgcolor=CARD, elevation=16,
+                shape=ft.RoundedRectangleBorder(radius=9),
+            ),
             border_color=BORDER, focused_border_color=CYAN,
             focused_border_width=1.5, border_radius=9,
             content_padding=ft.padding.Padding.symmetric(horizontal=12, vertical=10),
         )
+        original_trust = device.get("trust_status") or "new"
+        original_lifecycle = device.get("lifecycle_status") or "new"
+        lifecycle = ft.Dropdown(
+            label="Asset lifecycle", value=original_lifecycle,
+            options=[ft.DropdownOption(value, tr(value.upper())) for value in
+                     ("new", "observing", "authorized", "blocked", "retired", "stale")],
+            leading_icon=ft.Icons.AUTORENEW_ROUNDED, color=TEXT,
+            filled=True, fill_color=CARD, bgcolor=CARD,
+            menu_style=ft.MenuStyle(
+                bgcolor=CARD, elevation=16,
+                shape=ft.RoundedRectangleBorder(radius=9),
+            ),
+            border_color=BORDER, focused_border_color=CYAN,
+        )
+        criticality = ft.Dropdown(
+            label="Business criticality", value=device.get("criticality") or "medium",
+            options=[ft.DropdownOption(value, tr(value.upper())) for value in
+                     ("low", "medium", "high", "critical")],
+            leading_icon=ft.Icons.PRIORITY_HIGH_ROUNDED, color=TEXT,
+            filled=True, fill_color=CARD, bgcolor=CARD,
+            menu_style=ft.MenuStyle(
+                bgcolor=CARD, elevation=16,
+                shape=ft.RoundedRectangleBorder(radius=9),
+            ),
+            border_color=BORDER, focused_border_color=AMBER,
+        )
+        tags = styled_field("Tags (comma separated)", device.get("tags") or "",
+                            ft.Icons.LABEL_OUTLINE_ROUNDED)
+        observations = self.db.list_asset_observations(device["device_id"])
+        events = self.db.list_asset_events(device["device_id"], limit=5)
+        evidence_text = " · ".join(
+            f"{kind}: {sum(item['kind'] == kind for item in observations)}"
+            for kind in ("ip", "mac", "hostname", "vendor", "os", "service")
+            if any(item["kind"] == kind for item in observations)
+        ) or "No identity evidence"
+        event_text = "\n".join(
+            f"{item['occurred_at'][:16]} · {item['summary']}" for item in events
+        ) or "No asset events yet"
         page = self._page[0]
 
         def close(e=None):
@@ -1635,10 +1873,19 @@ class NetworkView:
             page.update()
 
         def save(e=None):
+            selected_lifecycle = lifecycle.value or "new"
+            if trust.value != original_trust and selected_lifecycle == original_lifecycle:
+                selected_lifecycle = {
+                    "new": "new", "known": "observing", "authorized": "authorized",
+                    "blocked": "blocked",
+                }.get(trust.value, selected_lifecycle)
             self.db.update_inventory_device(
                 address, alias=alias.value or "", device_type=device_type.value or "unknown",
                 owner=owner.value or "", location=location.value or "",
                 notes=notes.value or "", trust_status=trust.value or "new",
+                lifecycle_status=selected_lifecycle,
+                criticality=criticality.value or "medium", tags=tags.value or "",
+                reviewed=True,
             )
             close()
             if self._current_scan:
@@ -1684,8 +1931,25 @@ class NetworkView:
                     ft.Text("Classification and notes", color=MUTED, size=9,
                             weight=ft.FontWeight.W_700),
                     trust, notes,
+                    ft.Text("Enterprise asset management", color=MUTED, size=9,
+                            weight=ft.FontWeight.W_700),
+                    lifecycle, criticality, tags,
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Text(
+                                f"IDENTITY CONFIDENCE: {(device.get('identity_confidence') or 'low').upper()}",
+                                color=CYAN, size=9, weight=ft.FontWeight.W_700,
+                            ),
+                            ft.Text(evidence_text, color=MUTED, size=9),
+                            ft.Text("RECENT ASSET EVENTS", color=MUTED, size=8,
+                                    weight=ft.FontWeight.W_700),
+                            ft.Text(event_text, color=MUTED, size=8, selectable=True),
+                        ], spacing=4),
+                        bgcolor=tint(CYAN, .035), border=ft.Border.all(1, tint(CYAN, .14)),
+                        border_radius=8, padding=9,
+                    ),
                 ], spacing=10, scroll=ft.ScrollMode.AUTO),
-                width=500, height=500,
+                width=540, height=620,
             ),
             actions=[ft.TextButton("Cancel", on_click=close),
                      ft.Button(content="Save device", icon=ft.Icons.SAVE_ROUNDED,
@@ -1945,9 +2209,54 @@ class NetworkView:
 
     def on_mount(self):
         self._reload_history()
-        latest = self.db.get_latest_network_scan()
-        if latest:
-            self._render_scan(latest)
+
+    def _reset_scan_results(self):
+        """Clear the displayed snapshot without deleting stored scan history."""
+        self._current_scan = None
+        self._previous_scan = None
+        self._selected_host = ""
+        for ref, value in (
+            (self.r_devices, "0"), (self.r_ports, "0"),
+            (self.r_risk, "—"), (self.r_changes, "0"),
+            (self.r_health, "—"),
+        ):
+            if ref.current:
+                ref.current.value = value
+        if self.r_risk.current:
+            self.r_risk.current.color = MUTED
+        if self.r_health_summary.current:
+            self.r_health_summary.current.value = "Run a scan to calculate network health."
+        if self.r_health_factors.current:
+            self.r_health_factors.current.controls = [
+                ft.Text("No health assessment yet.", color=MUTED, size=10)
+            ]
+        if self.r_diagnostic_summary.current:
+            self.r_diagnostic_summary.current.value = "Run two scans to compare changes."
+        if self.r_diagnostic_list.current:
+            self.r_diagnostic_list.current.controls = [
+                ft.Text("No diagnostic information yet.", color=MUTED, size=11)
+            ]
+        if self.r_comparison_summary.current:
+            self.r_comparison_summary.current.value = (
+                "A previous scan is required for comparison."
+            )
+        if self.r_comparison.current:
+            self.r_comparison.current.controls = [
+                ft.Text("No comparison available.", color=MUTED, size=11)
+            ]
+        if self.r_topology_summary.current:
+            self.r_topology_summary.current.value = "Segments and connections overview"
+        if self.r_topology.current:
+            self.r_topology.current.controls = [
+                ft.Text("Run a scan to build the network map.", color=MUTED)
+            ]
+        if self.r_asset_summary.current:
+            self.r_asset_summary.current.value = "Run a scan to build the asset inventory."
+        if self.r_asset_list.current:
+            self.r_asset_list.current.controls = [
+                ft.Text("No assets observed yet.", color=MUTED, size=10)
+            ]
+        translate_tree(self._network_tabs, get_language())
 
 
 # ── 3. LOCAL PORTS ─────────────────────────────────────────────────────
@@ -2630,7 +2939,10 @@ class ChartsView:
         if content_width >= 760:
             self._chart_cards[0].width = content_width * 0.62 - 6
             self._chart_cards[1].width = content_width * 0.38 - 6
-            chart_height = max(210.0, min(460.0, content_height - 320.0))
+            # Use the available vertical space on desktop instead of leaving a
+            # large empty strip below the charts. The cap still prevents an
+            # excessively tall canvas on very large displays.
+            chart_height = max(240.0, min(680.0, content_height - 250.0))
         else:
             for control in self._chart_cards:
                 control.width = content_width
@@ -2854,13 +3166,15 @@ class HistoryView:
 
 class SettingsView:
     def __init__(self, state: AppState, language: str = "en", on_language_change=None,
-                 appearance=None, on_appearance_change=None):
+                 appearance=None, on_appearance_change=None,
+                 on_interface_change=None):
         self.state = state
         self.language = language
         self.on_language_change = on_language_change
         self.appearance = appearance or {"theme": "netpulse", "accent": "cyan",
                                          "density": "standard"}
         self.on_appearance_change = on_appearance_change
+        self.on_interface_change = on_interface_change
         self.r_bw_thresh   = ft.Ref[ft.TextField]()
         self.r_pps_thresh  = ft.Ref[ft.TextField]()
         self.r_alert_status = ft.Ref[ft.Text]()
@@ -2880,7 +3194,10 @@ class SettingsView:
             ft.DropdownOption(i["name"], f"{i['name']}  —  {i['ip']}")
             for i in ifaces
         ]
-        def on_iface(e): self.state.interface = e.control.value
+        def on_iface(e):
+            self.state.interface = e.control.value or "All"
+            if self.on_interface_change:
+                self.on_interface_change(self.state.interface)
 
         def on_language(e):
             self.language = e.control.value or "en"
@@ -3078,10 +3395,10 @@ class SettingsView:
             ], spacing=10))
 
         left_column = ft.Column(
-            [capture_card, appearance_card, database_card], spacing=12,
+            [capture_card, requirements_card, database_card], spacing=12,
         )
         right_column = ft.Column(
-            [alerts_card, requirements_card], spacing=12,
+            [alerts_card, appearance_card], spacing=12,
         )
         self._settings_columns = [left_column, right_column]
         self._settings_body = ft.Row(
@@ -3118,13 +3435,16 @@ class SettingsView:
             column_widths = (content_width, content_width)
 
         self._settings_columns[0].width, self._settings_columns[1].width = column_widths
-        for control in (self._cards[1], self._cards[2], self._cards[4]):
+        for control in (self._cards[1], self._cards[4], self._cards[5]):
             control.width = column_widths[0]
-        for control in (self._cards[3], self._cards[5]):
+        for control in (self._cards[2], self._cards[3]):
             control.width = column_widths[1]
 
         for control in self._cards[1:]:
             control.height = None
+            control.expand = False
+        for column in self._settings_columns:
+            column.height = None
         capture_inner = max(220.0, column_widths[0] - 28.0)
         self._interface_dropdown.width = min(500.0, capture_inner)
         alert_inner = max(220.0, column_widths[1] - 28.0)
@@ -3140,7 +3460,7 @@ class SettingsView:
 
 # ── 6. PROCESSES ────────────────────────────────────────────────────────
 
-class ProcessView:
+class _LegacyProcessView:
     """Per-process bandwidth usage view."""
 
     # Process icon map (partial — common names)
@@ -3312,5 +3632,10 @@ class ProcessView:
             )
         if self.r_procs.current:
                 self.r_procs.current.value = f"{len(proc)} {tr('processes')}"
+
+
+# Kept in its own module so application telemetry can evolve without growing
+# this already large collection of views.
+from .application_traffic import ProcessView
 
 

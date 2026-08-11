@@ -18,3 +18,4 @@ class Packet:
     remote: str
     pid: Optional[int] = None
     proc_name: str = ""
+    info: str = ""
