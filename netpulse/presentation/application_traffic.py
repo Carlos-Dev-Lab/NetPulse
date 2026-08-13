@@ -472,7 +472,7 @@ class ProcessView:
                 + f"{packet.src}:{packet.sport or '-'} → {packet.dst}:{packet.dport or '-'}"
                 + f" · {packet.size} B"
                 + (f" · {packet.info}" if packet.info else ""),
-                color=MUTED, size=8, font_family="monospace", selectable=True,
+                color=MUTED, size=8, font_family="monospace",
             ))
             if len(packet_controls) >= 20:
                 break

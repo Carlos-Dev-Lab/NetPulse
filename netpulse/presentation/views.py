@@ -29,6 +29,10 @@ from netpulse.domain.health import calculate_network_health
 from netpulse.infrastructure.sniffer import list_interfaces
 from netpulse.services.ip_info import geo_cache
 from netpulse.services.local_ports import list_local_listeners
+from netpulse.services.performance import (
+    adapter_capacity, checks_needed_for_trend, classify_quality, measure_quality,
+    quality_trend,
+)
 from netpulse.services.reporting import export_scan_reports
 from .charts import BarChartCanvas, LineChartCanvas, PieChartCanvas, SparklineCanvas
 from .i18n import get_language, tr, translate_tree
@@ -2844,127 +2848,281 @@ class PacketsView:
 # ── 3. CHARTS ────────────────────────────────────────────────────────────
 
 class ChartsView:
-    def __init__(self, state: AppState):
+    """Active quality checks and conservative capacity guidance."""
+
+    def __init__(self, state: AppState, page_ref=None, db: DB | None = None):
         self.s = state
-        self.r_kbin  = ft.Ref[ft.Text]()
-        self.r_kbout = ft.Ref[ft.Text]()
-        self.r_pps   = ft.Ref[ft.Text]()
-        self.r_peak_in  = ft.Ref[ft.Text]()
-        self.r_peak_out = ft.Ref[ft.Text]()
-        self.line_chart = LineChartCanvas(CYAN, GREEN, "Download", "Upload", 60, 220)
-        proto_colors = [CYAN, PURPLE, BLUE, AMBER, GREEN, RED, MUTED]
-        self.bar_chart  = BarChartCanvas(PROTO_LIST, proto_colors, 200)
-        self._speed_cards = []
-        self._speed_row = None
-        self._chart_cards = []
-        self._chart_row = None
+        self._page = page_ref or [None]
+        self.db = db
+        self.line_chart = None
+        self.bar_chart = None
+        self.r_status = ft.Ref[ft.Text]()
+        self.r_reason = ft.Ref[ft.Text]()
+        self.r_gateway = ft.Ref[ft.Text]()
+        self.r_latency = ft.Ref[ft.Text]()
+        self.r_jitter = ft.Ref[ft.Text]()
+        self.r_loss = ft.Ref[ft.Text]()
+        self.r_dns = ft.Ref[ft.Text]()
+        self.r_internet = ft.Ref[ft.Text]()
+        self.r_samples = ft.Ref[ft.Text]()
+        self.r_button = ft.Ref[ft.Button]()
+        self.r_trend = ft.Ref[ft.Text]()
+        self.r_trend_detail = ft.Ref[ft.Text]()
+        self.r_adapter = ft.Ref[ft.Text]()
+        self.r_capacity = ft.Ref[ft.Text]()
+        self.r_headroom = ft.Ref[ft.Text]()
+        self.r_history = ft.Ref[ft.Column]()
+        self._cards = []
+        self._grid = None
+        self._running = False
+        self._last_gateway = None
         self._layout_mode = None
 
     def build(self):
-        def _speed_card(label, ref, color, unit, ref_peak=None):
-            peak_row = []
-            if ref_peak:
-                peak_row = [ft.Row([
-                    ft.Text("peak:", size=10, color=MUTED),
-                    ft.Text(ref=ref_peak, value="0", size=10, color=color,
-                            font_family="monospace"),
-                ], spacing=4)]
-            return card(
+        async def run_check(e):
+            if self._running:
+                return
+            self._running = True
+            if self.r_button.current:
+                self.r_button.current.disabled = True
+                self.r_button.current.icon = ft.Icons.SYNC_ROUNDED
+                self.r_button.current.content = "CHECKING..."
+                self.r_button.current.update()
+            try:
+                rows = self.db.list_quality_checks(30) if self.db else []
+                checks_to_run = checks_needed_for_trend(rows) if self.db else 1
+                for index in range(checks_to_run):
+                    if self.r_button.current and checks_to_run > 1:
+                        self.r_button.current.content = (
+                            f"{tr('CHECKING...')} {index + 1}/{checks_to_run}"
+                        )
+                        self.r_button.current.update()
+                    result = await asyncio.to_thread(measure_quality)
+                    if self.db:
+                        self.db.save_quality_check(self.s.interface, result)
+                    self._apply_result(result)
+                    # Repeating a blocked or inconclusive ICMP probe does not add
+                    # useful evidence and would only delay feedback to the user.
+                    if result.confidence != "sufficient":
+                        break
+                self._refresh_evidence()
+            finally:
+                self._running = False
+                if self.r_button.current:
+                    self.r_button.current.disabled = False
+                    self.r_button.current.icon = ft.Icons.NETWORK_CHECK_ROUNDED
+                    self.r_button.current.content = "RUN QUALITY CHECK"
+                page = self._page[0]
+                if page:
+                    translate_tree(page, get_language())
+                    page.update()
+
+        def metric(label, ref, color):
+            control = card(ft.Column([
+                ft.Text(label, size=9, color=DIM, weight=ft.FontWeight.W_600),
+                ft.Text(ref=ref, value="Not measured", size=22, color=color,
+                        weight=ft.FontWeight.BOLD, font_family="monospace"),
+            ], spacing=7), glow=color, height=88)
+            self._cards.append(control)
+            return control
+
+        self._grid = ft.Row([
+            metric("GATEWAY LATENCY", self.r_latency, CYAN),
+            metric("JITTER", self.r_jitter, PURPLE),
+            metric("PACKET LOSS", self.r_loss, AMBER),
+            metric("DNS RESOLUTION", self.r_dns, GREEN),
+        ], spacing=12, wrap=True, run_spacing=12)
+        status_card = card(ft.Column([
+            ft.Row([
+                ft.Icon(ft.Icons.VERIFIED_USER_OUTLINED, color=CYAN, size=22),
                 ft.Column([
-                    ft.Text(label, size=10, color=DIM, weight=ft.FontWeight.W_600),
-                    ft.Text(ref=ref, value="0.0", size=36, color=color,
-                            weight=ft.FontWeight.BOLD, font_family="monospace"),
-                    ft.Text(unit, size=12, color=MUTED),
-                    *peak_row,
-                ], spacing=4, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-                glow=color, height=122,
+                    ft.Text(ref=self.r_status, value="NOT MEASURED", color=TEXT,
+                            size=14, weight=ft.FontWeight.W_700),
+                    ft.Text(ref=self.r_reason,
+                            value="Run a check to collect independent quality evidence.",
+                            color=MUTED, size=10),
+                ], spacing=2, expand=True),
+                ft.Button(ref=self.r_button, content="RUN QUALITY CHECK",
+                          icon=ft.Icons.NETWORK_CHECK_ROUNDED, on_click=run_check,
+                          color=CYAN, bgcolor=tint(CYAN, .10)),
+            ], spacing=10),
+            ft.Divider(color=BORDER, height=8),
+            ft.Row([
+                ft.Text("Gateway:", color=MUTED, size=10),
+                ft.Text(ref=self.r_gateway, value="Not detected", color=TEXT,
+                        size=10, font_family="monospace"),
+                ft.Text("Evidence:", color=MUTED, size=10),
+                ft.Text(ref=self.r_samples, value="0/4 replies", color=TEXT, size=10),
+                ft.Text("Internet:", color=MUTED, size=10),
+                ft.Text(ref=self.r_internet, value="Not checked", color=TEXT, size=10),
+            ], spacing=8, wrap=True),
+        ], spacing=7), glow=CYAN)
+        guidance = card(ft.Column([
+            section_title("HOW TO INTERPRET THIS CHECK"),
+            ft.Text(
+                "Measurements are taken on demand and are not inferred from captured traffic. "
+                "NetPulse requires at least three gateway replies before classifying quality. "
+                "If ICMP is blocked, the result remains insufficient instead of reporting false loss.",
+                color=MUTED, size=10,
+            ),
+            ft.Text(
+                "Review thresholds: latency ≥100 ms, jitter ≥30 ms or packet loss ≥5%. "
+                "DNS and Internet checks are reported independently.",
+                color=DIM, size=10,
+            ),
+        ], spacing=8), glow=PURPLE)
+        def capacity_metric(label, value_ref, color, detail_ref=None):
+            controls = [
+                ft.Text(label, color=MUTED, size=9, weight=ft.FontWeight.W_600),
+                ft.Text(ref=value_ref, value=("INSUFFICIENT DATA" if detail_ref else
+                                              "Not detected" if value_ref is self.r_adapter
+                                              else "Unavailable"),
+                        color=color, size=12, weight=ft.FontWeight.W_600),
+            ]
+            if detail_ref:
+                controls.append(ft.Text(ref=detail_ref, value="0/5 valid checks",
+                                        color=DIM, size=9))
+            return ft.Container(
+                content=ft.Column(controls, spacing=3, tight=True),
+                col={"xs": 12, "sm": 6, "lg": 3},
+                bgcolor=tint(color, .035),
+                border=ft.Border.all(1, tint(color, .13)),
+                border_radius=8,
+                padding=10,
+                height=72,
             )
 
-        self._speed_cards = [
-            _speed_card("DOWNLOAD", self.r_kbin, CYAN, "KB/s", self.r_peak_in),
-            _speed_card("UPLOAD", self.r_kbout, GREEN, "KB/s", self.r_peak_out),
-            _speed_card("PACKETS/SEC", self.r_pps, AMBER, "pkt/s"),
-        ]
-        self._speed_row = ft.Row(
-            self._speed_cards, spacing=12, wrap=True, run_spacing=12,
-            vertical_alignment=ft.CrossAxisAlignment.START,
-        )
-        self._chart_cards = [
-            card(ft.Column([
-                ft.Row([
-                    section_title("BANDWIDTH OVER TIME  ( KB/s )"),
-                    ft.Container(expand=True),
-                    ft.Row([
-                        ft.Container(width=10, height=10, bgcolor=CYAN,  border_radius=3),
-                        ft.Text("Download", size=11, color=DIM),
-                        ft.Container(width=10, height=10, bgcolor=GREEN, border_radius=3),
-                        ft.Text("Upload",   size=11, color=DIM),
-                    ], spacing=8),
-                ]),
-                self.line_chart.widget,
-            ], spacing=10)),
-
-            card(ft.Column([
-                section_title("PROTOCOL DISTRIBUTION"),
-                self.bar_chart.widget,
-            ], spacing=10)),
-        ]
-        self._chart_row = ft.Row(
-            self._chart_cards, spacing=12, wrap=True, run_spacing=12,
-            vertical_alignment=ft.CrossAxisAlignment.START,
-        )
+        self._capacity_grid = ft.ResponsiveRow([
+            capacity_metric("ACTIVE ADAPTER", self.r_adapter, CYAN),
+            capacity_metric("LINK CAPACITY", self.r_capacity, BLUE),
+            capacity_metric("OBSERVED HEADROOM", self.r_headroom, GREEN),
+            capacity_metric("QUALITY TREND", self.r_trend, AMBER, self.r_trend_detail),
+        ], columns=12, spacing=10, run_spacing=10)
+        capacity_card = card(ft.Column([
+            section_title("CAPACITY AND TREND"),
+            self._capacity_grid,
+        ], spacing=10, tight=True), glow=GREEN)
+        history_card = card(ft.Column([
+            section_title("RECENT QUALITY CHECKS"),
+            ft.Column(ref=self.r_history, controls=[
+                ft.Text("No saved quality checks yet.", color=MUTED, size=10)
+            ], spacing=5, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
+        ], spacing=8), glow=AMBER)
+        self._capacity_card = capacity_card
+        self._history_card = history_card
+        self._refresh_evidence()
         return ft.Column([
-            view_heading("Traffic analytics", "Bandwidth trends and protocol distribution in real time",
-                         ft.Icons.QUERY_STATS_ROUNDED, PURPLE),
-            self._speed_row,
-            self._chart_row,
+            view_heading("Performance and capacity",
+                         "Measure connection quality without duplicating dashboard traffic",
+                         ft.Icons.SPEED_ROUNDED, PURPLE),
+            status_card,
+            self._grid,
+            capacity_card,
+            history_card,
+            guidance,
         ], spacing=12, scroll=ft.ScrollMode.AUTO, expand=True)
 
     def set_viewport(self, width: float, height: float):
         content_width = max(280.0, width - 28.0)
-        content_height = max(420.0, height - 28.0)
-        mode = "wide" if content_width >= 430 else "compact" if content_width >= 330 else "narrow"
-        layout_key = (mode, round(content_width), round(content_height))
-        if layout_key == self._layout_mode or not self._speed_cards:
+        mode = "wide" if content_width >= 900 else "compact" if content_width >= 560 else "narrow"
+        layout_key = (mode, round(content_width), round(height))
+        if layout_key == self._layout_mode or not self._cards:
             return
         self._layout_mode = layout_key
-        self._speed_row.width = content_width
-        self._chart_row.width = content_width
-        count = 3 if mode == "wide" else 2 if mode == "compact" else 1
+        self._grid.width = content_width
+        self._history_card.width = content_width
+        count = 4 if mode == "wide" else 2 if mode == "compact" else 1
         card_width = (content_width - 12 * (count - 1)) / count
-        for control in self._speed_cards:
+        for control in self._cards:
             control.width = card_width
-        if mode == "compact":
-            self._speed_cards[2].width = content_width
-        if content_width >= 760:
-            self._chart_cards[0].width = content_width * 0.62 - 6
-            self._chart_cards[1].width = content_width * 0.38 - 6
-            # Use the available vertical space on desktop instead of leaving a
-            # large empty strip below the charts. The cap still prevents an
-            # excessively tall canvas on very large displays.
-            chart_height = max(240.0, min(680.0, content_height - 250.0))
-        else:
-            for control in self._chart_cards:
-                control.width = content_width
-            chart_height = 210 if content_height >= 620 else 170
-        self.line_chart.resize(self._chart_cards[0].width - 28.0, chart_height)
-        self.bar_chart.resize(self._chart_cards[1].width - 28.0, chart_height)
 
     def refresh(self):
-        s = self.s
-        if not self.r_kbin.current:
-            return
-        self.r_kbin.current.value  = f"{s.cur_kbps_in:.1f}"
-        self.r_kbout.current.value = f"{s.cur_kbps_out:.1f}"
-        self.r_pps.current.value   = f"{s.cur_pps:.0f}"
-        if self.r_peak_in.current:
-            self.r_peak_in.current.value  = f"{s.peak_kbps_in:.1f} KB/s"
-        if self.r_peak_out.current:
-            self.r_peak_out.current.value = f"{s.peak_kbps_out:.1f} KB/s"
-        self.line_chart.update_data(list(s.hist_in), list(s.hist_out))
-        if s.proto:
-            vals = [float(s.proto.get(pr, 0)) for pr in PROTO_LIST]
-            self.bar_chart.update_data(vals)
+        # Quality checks are intentionally on demand; the global refresh loop
+        # must not generate background network traffic or duplicate Dashboard.
+        return
+
+    def on_mount(self):
+        self._refresh_evidence()
+        for ref in (
+            self.r_adapter, self.r_capacity, self.r_headroom, self.r_trend,
+            self.r_trend_detail, self.r_history,
+        ):
+            if ref.current:
+                try:
+                    ref.current.update()
+                except RuntimeError:
+                    pass
+
+    def _apply_result(self, result):
+        self._last_gateway = result.target
+        status, reason = classify_quality(result)
+        color = GREEN if status == "STABLE" else AMBER if status == "REVIEW" else MUTED
+        self.r_status.current.value = status
+        self.r_status.current.color = color
+        self.r_reason.current.value = reason or "No classification available."
+        self.r_gateway.current.value = result.target
+        self.r_samples.current.value = f"{result.received}/{result.samples} replies"
+        self.r_latency.current.value = (f"{result.latency_ms:.1f} ms"
+                                        if result.latency_ms is not None else "Unavailable")
+        self.r_jitter.current.value = (f"{result.jitter_ms:.1f} ms"
+                                       if result.jitter_ms is not None else "Unavailable")
+        self.r_loss.current.value = (f"{result.loss_percent:.0f}%"
+                                     if result.loss_percent is not None else "Insufficient")
+        self.r_dns.current.value = (f"{result.dns_ms:.1f} ms"
+                                    if result.dns_ms is not None else "Unavailable")
+        self.r_internet.current.value = (
+            "Reachable" if result.internet_reachable is True
+            else "Not reachable" if result.internet_reachable is False
+            else "Inconclusive"
+        )
+
+    def _refresh_evidence(self):
+        capacity = adapter_capacity(self.s.interface, self._last_gateway)
+        if self.r_adapter.current:
+            self.r_adapter.current.value = capacity["name"]
+            self.r_capacity.current.value = (
+                f"{capacity['speed_mbps']:.0f} Mbps" if capacity["speed_mbps"] else "Unavailable"
+            )
+            observed_mbps = (self.s.peak_kbps_in + self.s.peak_kbps_out) * 8 / 1024
+            if capacity["speed_mbps"] and observed_mbps > 0:
+                used = min(100.0, observed_mbps / capacity["speed_mbps"] * 100)
+                self.r_headroom.current.value = f"{100 - used:.1f}% (capture peak)"
+            else:
+                self.r_headroom.current.value = "Insufficient data"
+        rows = self.db.list_quality_checks(30) if self.db else []
+        trend, detail = quality_trend(rows)
+        if self.r_trend.current:
+            self.r_trend.current.value = trend
+            self.r_trend_detail.current.value = detail
+        if self.r_history.current:
+            self.r_history.current.controls = [
+                ft.Container(
+                    content=ft.Row([
+                        ft.Text(str(row["ts"])[5:16].replace("T", "  "),
+                                color=TEXT, size=10, font_family="monospace", width=105),
+                        ft.Text(row["gateway"], color=CYAN, size=10,
+                                font_family="monospace", width=120),
+                        ft.Text(f"Latencia  {row['latency_ms']:.1f} ms",
+                                color=GREEN if row["latency_ms"] < 100 else AMBER,
+                                size=10, width=145),
+                        ft.Text(f"Jitter  {row['jitter_ms']:.1f} ms",
+                                color=GREEN if row["jitter_ms"] < 30 else AMBER,
+                                size=10, width=130),
+                        ft.Text(f"Pérdida  {row['loss_percent']:.0f}%",
+                                color=GREEN if row["loss_percent"] < 5 else AMBER,
+                                size=10, width=115),
+                        ft.Text(f"DNS  {row['dns_ms']:.1f} ms" if row["dns_ms"] is not None
+                                else "DNS  no disponible", color=PURPLE, size=10),
+                    ], spacing=10, wrap=True, run_spacing=5),
+                    bgcolor=tint(CYAN, .035),
+                    border=ft.Border.all(1, tint(CYAN, .14)),
+                    border_radius=7,
+                    padding=ft.padding.Padding.symmetric(horizontal=10, vertical=8),
+                )
+                for row in rows[:8]
+                if row["received"] >= 3 and row["latency_ms"] is not None
+                and row["jitter_ms"] is not None and row["loss_percent"] is not None
+            ] or [ft.Text("No saved quality checks yet.", color=MUTED, size=10)]
 
 
 # ── 4. HISTORY ────────────────────────────────────────────────────────────
@@ -3413,6 +3571,11 @@ class SettingsView:
             view_heading("System settings", "Capture source, alert thresholds and local storage",
                          ft.Icons.TUNE_ROUNDED, CYAN),
             intro_card,
+            ft.Row([
+                ft.Icon(ft.Icons.CONTENT_COPY_ROUNDED, color=CYAN, size=14),
+                ft.Text("Tip: drag over any result text to select it, then press Ctrl+C.",
+                        color=MUTED, size=10),
+            ], spacing=7),
             self._settings_body,
         ], spacing=12, scroll=ft.ScrollMode.AUTO, expand=True)
 

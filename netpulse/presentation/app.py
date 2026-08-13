@@ -19,7 +19,7 @@ from netpulse.infrastructure.sniffer import Sniffer, list_interfaces
 from netpulse.services.ip_info import geo_cache
 from .theme import (
     AMBER, BG, BORDER, CARD, CYAN, GREEN, MUTED, RED, SURFACE, TEXT,
-    appearance_palette, make_theme, recolor_tree, tint,
+    appearance_palette, make_theme, recolor_tree, selectable_content, tint,
 )
 from .views import (
     ChartsView, DashboardView, HistoryView, LocalPortsView, NetworkView,
@@ -114,7 +114,7 @@ def main(page: ft.Page):
     )
     ports_v = LocalPortsView(_page_ref)
     pkt_v   = PacketsView(state, _page_ref)
-    chart_v = ChartsView(state)
+    chart_v = ChartsView(state, _page_ref, db)
     hist_v  = HistoryView(db)
     proc_v  = ProcessView(state, _page_ref)
     def on_interface_change(value: str):
@@ -140,7 +140,7 @@ def main(page: ft.Page):
 
     def _wrap(v):
         return ft.Container(
-            content=v, expand=True, visible=True,
+            content=selectable_content(v), expand=True, visible=True,
             padding=ft.padding.Padding.only(left=14, top=14, right=14, bottom=14),
         )
 
@@ -300,7 +300,7 @@ def main(page: ft.Page):
 
     # ── Navigation ─────────────────────────────────────────────────────
     section_names = ["Overview", "Network discovery", "Local ports",
-                     "Packet explorer", "Traffic analytics", "Session history",
+                     "Packet explorer", "Performance and capacity", "Session history",
                      "Applications", "System settings"]
 
     def on_nav(e: ft.ControlEvent):
@@ -320,6 +320,8 @@ def main(page: ft.Page):
             net_v.on_mount()
         if idx == 2:   # Local ports
             ports_v.on_mount()
+        if idx == 4:   # Performance and capacity
+            chart_v.on_mount()
         if idx == 5:   # Traffic history
             hist_v.on_mount()
             try:
@@ -352,7 +354,7 @@ def main(page: ft.Page):
             nav_dest(ft.Icons.PRIVACY_TIP_OUTLINED, ft.Icons.PRIVACY_TIP_ROUNDED,
                      "Local ports"),
             nav_dest(ft.Icons.TABLE_ROWS_OUTLINED, ft.Icons.TABLE_ROWS_ROUNDED, "Packets"),
-            nav_dest(ft.Icons.SHOW_CHART_OUTLINED, ft.Icons.SHOW_CHART_ROUNDED, "Analytics"),
+            nav_dest(ft.Icons.SPEED_OUTLINED, ft.Icons.SPEED_ROUNDED, "Analytics"),
             nav_dest(ft.Icons.HISTORY_ROUNDED, ft.Icons.HISTORY_ROUNDED, "History"),
             nav_dest(ft.Icons.APPS_ROUNDED, ft.Icons.APPS_ROUNDED, "Apps"),
             nav_dest(ft.Icons.SETTINGS_OUTLINED, ft.Icons.SETTINGS_ROUNDED, "Settings"),
@@ -517,6 +519,8 @@ def main(page: ft.Page):
         net_v.on_mount()
     elif initial_view == 2:
         ports_v.on_mount()
+    elif initial_view == 4:
+        chart_v.on_mount()
     elif initial_view == 5:
         hist_v.on_mount()
 

@@ -6,11 +6,50 @@ one catalog and registering it in ``CATALOGS``; views do not need rebuilding.
 
 import flet as ft
 
+from .theme import selectable_dialog_content
+
 
 ES = {
+    "Analytics": "Rendimiento",
+    "Performance and capacity": "Rendimiento y capacidad",
+    "Measure connection quality without duplicating dashboard traffic":
+        "Mide la calidad de la conexión sin duplicar el tráfico del resumen",
+    "RUN QUALITY CHECK": "COMPROBAR CALIDAD",
+    "CHECKING...": "COMPROBANDO...",
+    "GATEWAY LATENCY": "LATENCIA DE PUERTA DE ENLACE",
+    "JITTER": "VARIACIÓN (JITTER)",
+    "PACKET LOSS": "PÉRDIDA DE PAQUETES",
+    "DNS RESOLUTION": "RESOLUCIÓN DNS",
+    "NOT MEASURED": "SIN MEDIR", "Not measured": "Sin medir",
+    "Not detected": "No detectada", "Not checked": "Sin comprobar",
+    "Gateway:": "Puerta de enlace:", "Evidence:": "Evidencia:",
+    "Reachable": "Disponible", "Not reachable": "No disponible",
+    "Inconclusive": "No concluyente", "Unavailable": "No disponible",
+    "Insufficient": "Insuficiente", "INSUFFICIENT DATA": "DATOS INSUFICIENTES",
+    "STABLE": "ESTABLE", "REVIEW": "REVISAR",
+    "HOW TO INTERPRET THIS CHECK": "CÓMO INTERPRETAR ESTA COMPROBACIÓN",
+    "Run a check to collect independent quality evidence.":
+        "Ejecuta una comprobación para obtener evidencia independiente de calidad.",
+    "Gateway samples show no degradation.":
+        "Las muestras de la puerta de enlace no muestran degradación.",
+    "No classification available.": "No hay una clasificación disponible.",
+    "ICMP evidence is insufficient; latency and loss are not classified.":
+        "La evidencia ICMP es insuficiente; no se clasifican la latencia ni la pérdida.",
+    "Measurements are taken on demand and are not inferred from captured traffic. NetPulse requires at least three gateway replies before classifying quality. If ICMP is blocked, the result remains insufficient instead of reporting false loss.":
+        "Las mediciones se realizan bajo demanda y no se infieren del tráfico capturado. NetPulse necesita al menos tres respuestas de la puerta de enlace para clasificar la calidad. Si ICMP está bloqueado, el resultado permanece como insuficiente en vez de informar una pérdida falsa.",
+    "Review thresholds: latency ≥100 ms, jitter ≥30 ms or packet loss ≥5%. DNS and Internet checks are reported independently.":
+        "Umbrales de revisión: latencia ≥100 ms, jitter ≥30 ms o pérdida de paquetes ≥5 %. Las comprobaciones DNS e Internet se informan por separado.",
+    "CAPACITY AND TREND": "CAPACIDAD Y TENDENCIA",
+    "ACTIVE ADAPTER": "ADAPTADOR ACTIVO", "LINK CAPACITY": "CAPACIDAD DEL ENLACE",
+    "OBSERVED HEADROOM": "MARGEN OBSERVADO", "QUALITY TREND": "TENDENCIA DE CALIDAD",
+    "RECENT QUALITY CHECKS": "COMPROBACIONES RECIENTES DE CALIDAD",
+    "No saved quality checks yet.": "Todavía no hay comprobaciones de calidad guardadas.",
+    "Insufficient data": "Datos insuficientes", "NO DEGRADATION": "SIN DEGRADACIÓN",
+    "DEGRADING": "DEGRADACIÓN", "replies": "respuestas",
+    "valid checks": "comprobaciones válidas", "capture peak": "pico capturado",
     "Overview": "Resumen", "Network": "Red", "Packets": "Paquetes",
     "Local ports": "Puertos locales",
-    "Analytics": "Analítica", "History": "Historial", "Apps": "Aplicaciones",
+    "History": "Historial", "Apps": "Aplicaciones",
     "Settings": "Ajustes", "START": "INICIAR", "STOP": "DETENER",
     "STOPPED": "DETENIDO", "CAPTURING": "CAPTURANDO",
     "Network overview": "Resumen de red",
@@ -75,6 +114,7 @@ ES = {
     "No matching packets remain in the live buffer.": "No quedan paquetes coincidentes en el búfer en vivo.",
     "System settings": "Ajustes del sistema",
     "Capture source, alert thresholds and local storage": "Fuente de captura, alertas y almacenamiento local",
+    "Tip: drag over any result text to select it, then press Ctrl+C.": "Consejo: arrastra sobre cualquier texto de resultados para seleccionarlo y luego pulsa Ctrl+C.",
     "APPEARANCE": "APARIENCIA",
     "Customize the interface without restarting NetPulse.": "Personaliza la interfaz sin reiniciar NetPulse.",
     "Visual theme": "Tema visual", "Accent color": "Color de acento",
@@ -418,6 +458,8 @@ def tr(value: str, language: str | None = None) -> str:
             value = result
             break
     replacements = (
+        (" replies", " respuestas"), (" valid checks", " comprobaciones válidas"),
+        ("capture peak", "pico capturado"),
         (" devices", " dispositivos"), (" device(s)", " dispositivo(s)"),
         (" packets", " paquetes"), (" sessions", " sesiones"), (" hosts", " equipos"),
         (" segments", " segmentos"), (" nodes", " nodos"),
@@ -472,6 +514,8 @@ def translate_tree(control, language: str, seen=None) -> None:
     if id(control) in seen:
         return
     seen.add(id(control))
+    if isinstance(control, ft.AlertDialog):
+        selectable_dialog_content(control)
     for attr in (
         "value", "label", "hint_text", "helper_text", "content", "text",
         "tooltip", "error_text",

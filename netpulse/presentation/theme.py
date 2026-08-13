@@ -91,6 +91,42 @@ def recolor_tree(control, old_palette: dict, new_palette: dict) -> None:
                 recolor_tree(child, old_palette, new_palette)
 
 
+def selectable_content(control: ft.Control) -> ft.SelectionArea:
+    """Provide one continuous native selection scope for an entire view."""
+    return ft.SelectionArea(content=control, expand=True)
+
+
+def selectable_dialog_content(dialog: ft.AlertDialog) -> None:
+    """Allow conventional drag selection across all text in a dialog body."""
+    def contains_form_control(node, seen=None) -> bool:
+        if node is None:
+            return False
+        seen = seen or set()
+        if id(node) in seen:
+            return False
+        seen.add(id(node))
+        form_types = (
+            ft.TextField, ft.Dropdown, ft.Checkbox, ft.Switch, ft.Radio,
+            ft.RadioGroup, ft.Slider, ft.RangeSlider,
+        )
+        if isinstance(node, form_types):
+            return True
+        for attr in ("content", "controls", "leading", "trailing", "rows", "cells"):
+            child = getattr(node, attr, None)
+            if isinstance(child, (list, tuple)):
+                if any(contains_form_control(item, seen) for item in child):
+                    return True
+            elif child is not None and not isinstance(child, (str, int, float, bool)):
+                if contains_form_control(child, seen):
+                    return True
+        return False
+
+    if (dialog.content is not None
+            and not isinstance(dialog.content, ft.SelectionArea)
+            and not contains_form_control(dialog.content)):
+        dialog.content = ft.SelectionArea(content=dialog.content)
+
+
 def proto_color(p: str) -> str:
     return PROTO_COLORS.get(p, MUTED)
 

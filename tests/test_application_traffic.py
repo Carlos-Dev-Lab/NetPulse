@@ -86,6 +86,31 @@ class ApplicationTrafficTests(unittest.TestCase):
         self.assertIn("encrypted traffic", joined.lower())
         self.assertIn("REMOTE CONNECTIONS", joined)
 
+    def test_recent_packet_evidence_uses_dialog_continuous_selection(self):
+        page = _Page()
+        view = ProcessView(self._state(), [page])
+        view.build(); view.refresh()
+        view.r_table.current.controls[0].on_click(None)
+
+        self.assertIsInstance(page.dialog.content, ft.SelectionArea)
+        packet_lines = []
+
+        def walk(control):
+            if (isinstance(control, ft.Text)
+                    and control.font_family == "monospace"
+                    and " · OUT · " in control.value):
+                packet_lines.append(control)
+            for name in ("content", "controls"):
+                value = getattr(control, name, None)
+                children = value if isinstance(value, list) else [value]
+                for child in children:
+                    if isinstance(child, ft.Control):
+                        walk(child)
+
+        walk(page.dialog.content)
+        self.assertGreaterEqual(len(packet_lines), 1)
+        self.assertTrue(all(not line.selectable for line in packet_lines))
+
     def test_search_can_match_a_destination_ip(self):
         view = ProcessView(self._state())
         view.build()

@@ -35,14 +35,48 @@ from netpulse.services.local_ports import LocalListener
 
 
 class SystemSmokeTests(unittest.TestCase):
-    def test_analytics_uses_available_desktop_height(self):
+    def test_performance_metrics_use_available_desktop_width(self):
         view = ChartsView(AppState())
         view.build()
 
         view.set_viewport(1400, 1100)
 
-        self.assertEqual(view.line_chart.H, 680.0)
-        self.assertEqual(view.bar_chart.H, 680.0)
+        self.assertEqual(len(view._cards), 4)
+        self.assertTrue(all(card.width == 334.0 for card in view._cards))
+        self.assertEqual(view._history_card.width, 1372.0)
+        self.assertEqual(
+            view.r_history.current.horizontal_alignment,
+            flet.CrossAxisAlignment.STRETCH,
+        )
+
+    def test_performance_history_rows_are_active_styled_cards(self):
+        from netpulse.services.performance import QualityResult
+
+        with TemporaryDirectory() as directory:
+            db = DB(Path(directory) / "quality-style.db")
+            db.save_quality_check(
+                "Ethernet", QualityResult("10.0.0.1", 4, 4, 4.0, 1.0, 0.0, 3.0, True)
+            )
+            view = ChartsView(AppState(), [None], db)
+            view.build()
+            history = view.r_history.current
+            self.assertIsNotNone(history)
+            view._refresh_evidence()
+
+            row = history.controls[0]
+            self.assertIsInstance(row, flet.Container)
+            self.assertIsNotNone(row.bgcolor)
+            self.assertEqual(row.content.controls[1].color, "#00D4FF")
+
+    def test_capacity_layout_avoids_expanded_columns_inside_wrapped_row(self):
+        view = ChartsView(AppState())
+        view.build()
+
+        self.assertIsInstance(view._capacity_grid, flet.ResponsiveRow)
+        self.assertEqual(len(view._capacity_grid.controls), 4)
+        for metric in view._capacity_grid.controls:
+            self.assertIsNone(metric.content.expand)
+            self.assertEqual(metric.height, 72)
 
     def test_network_opens_new_scan_mode_without_loading_history(self):
         class PageStub:
@@ -278,7 +312,8 @@ class SystemSmokeTests(unittest.TestCase):
             self.assertIsInstance(page.dialog, flet.AlertDialog)
             self.assertTrue(page.dialog.open)
             self.assertIn("172.26.3.10", page.dialog.title.value)
-            self.assertGreaterEqual(len(page.dialog.content.content.controls), 1)
+            self.assertIsInstance(page.dialog.content, flet.SelectionArea)
+            self.assertGreaterEqual(len(page.dialog.content.content.content.controls), 1)
 
     def test_profile_and_schedule_dialogs_save_and_refresh(self):
         class PageStub:

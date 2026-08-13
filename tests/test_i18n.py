@@ -62,10 +62,12 @@ class I18nTests(unittest.TestCase):
         translate_tree(dialog, "es")
 
         self.assertEqual(dialog.title.value, "Guardar perfil de análisis")
-        self.assertEqual(dialog.content.title.value, "DETALLE DE SALUD DE LA RED")
-        self.assertEqual(dialog.content.subtitle.value,
+        self.assertIsInstance(dialog.content, ft.SelectionArea)
+        content = dialog.content.content
+        self.assertEqual(content.title.value, "DETALLE DE SALUD DE LA RED")
+        self.assertEqual(content.subtitle.value,
                          "Ejecuta un análisis para calcular la salud de la red.")
-        self.assertEqual(dialog.content.controls[0].tooltip, "Eliminar programación")
+        self.assertEqual(content.controls[0].tooltip, "Eliminar programación")
         self.assertEqual(dialog.actions[0].content, "Cancelar")
         self.assertEqual(dialog.actions[1].content, "Guardar perfil")
 

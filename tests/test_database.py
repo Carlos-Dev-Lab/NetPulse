@@ -3,11 +3,23 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from netpulse.infrastructure.database import DB
+from netpulse.services.performance import QualityResult
 from netpulse.domain.network_scan import NetworkScan, ScanHost, ScanService
 from datetime import datetime, timedelta
 
 
 class DatabaseTests(unittest.TestCase):
+    def test_quality_checks_are_persisted_newest_first(self):
+        with TemporaryDirectory() as directory:
+            db = DB(Path(directory) / "quality.db")
+            result = QualityResult("10.0.0.1", 4, 4, 5.0, 1.0, 0.0, 8.0, True)
+            db.save_quality_check("Ethernet", result)
+
+            rows = db.list_quality_checks()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["gateway"], "10.0.0.1")
+            self.assertEqual(rows[0]["internet_reachable"], 1)
+
     def test_inventory_follows_mac_when_dhcp_changes_address(self):
         with TemporaryDirectory() as directory:
             db = DB(Path(directory) / "rotation.db")

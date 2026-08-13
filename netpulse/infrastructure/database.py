@@ -60,6 +60,21 @@ CREATE TABLE IF NOT EXISTS top_ips (
 
 CREATE INDEX IF NOT EXISTS idx_stats_session ON stats(session_id, ts);
 
+CREATE TABLE IF NOT EXISTS quality_checks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    interface TEXT,
+    gateway TEXT,
+    received INTEGER NOT NULL,
+    samples INTEGER NOT NULL,
+    latency_ms REAL,
+    jitter_ms REAL,
+    loss_percent REAL,
+    dns_ms REAL,
+    internet_reachable INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_quality_checks_ts ON quality_checks(ts);
+
 CREATE TABLE IF NOT EXISTS network_scans (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at      TEXT NOT NULL,
@@ -644,6 +659,27 @@ class DB:
             return [dict(r) for r in c.execute(
                 "SELECT * FROM stats WHERE session_id=? ORDER BY ts", (sid,)
             ).fetchall()]
+
+    def save_quality_check(self, interface: str, result) -> int:
+        reachable = (1 if result.internet_reachable is True else
+                     0 if result.internet_reachable is False else None)
+        with self._cx() as c:
+            return c.execute(
+                """INSERT INTO quality_checks
+                   (ts,interface,gateway,received,samples,latency_ms,jitter_ms,
+                    loss_percent,dns_ms,internet_reachable)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (datetime.now().isoformat(), interface or "All", result.target,
+                 result.received, result.samples, result.latency_ms, result.jitter_ms,
+                 result.loss_percent, result.dns_ms, reachable),
+            ).lastrowid
+
+    def list_quality_checks(self, limit: int = 30) -> List[Dict[str, Any]]:
+        with self._cx() as c:
+            rows = c.execute(
+                "SELECT * FROM quality_checks ORDER BY ts DESC LIMIT ?", (limit,)
+            ).fetchall()
+            return [dict(row) for row in rows]
 
     # ── Top IPs ───────────────────────────────────────────────────────────
     def upsert_ips(self, sid: int, ips_data: List[tuple]):
