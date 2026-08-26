@@ -11,7 +11,7 @@ from .dialogs import close_dialog, open_dialog
 from .i18n import tr, translate_tree, get_language
 from .theme import (
     AMBER, BLUE, BORDER, CARD, CYAN, DIM, GREEN, MUTED, PURPLE, RED,
-    SURFACE, TEXT, card, tint, view_heading,
+    SURFACE, TEXT, card, fit, snap, split, tint, view_heading,
 )
 
 
@@ -45,6 +45,8 @@ class ProcessView:
         self._summary_cards = []
         self._root = None
         self._list_card = None
+        self._search_field = None
+        self._filter_dropdown = None
         self._layout_key = None
         self._name_width = 230.0
         self._traffic_width = 112.0
@@ -107,27 +109,26 @@ class ProcessView:
         ], spacing=10, wrap=True, run_spacing=10)
         self._summary_row = summary
 
-        filters = ft.Row([
-            ft.TextField(
-                ref=self.r_search, label="Search application, PID, domain or IP",
-                prefix_icon=ft.Icons.SEARCH_ROUNDED, expand=True,
-                bgcolor=SURFACE, color=TEXT, border_color=BORDER,
-                focused_border_color=CYAN, text_size=11, on_change=apply_filter,
-            ),
-            ft.Dropdown(
-                ref=self.r_filter, value="all", width=190, dense=True,
-                options=[
-                    ft.DropdownOption("all", "All applications"),
-                    ft.DropdownOption("active", "Active now"),
-                    ft.DropdownOption("download", "Highest download"),
-                    ft.DropdownOption("upload", "Highest upload"),
-                    ft.DropdownOption("unknown", "Unidentified processes"),
-                ],
-                on_select=apply_filter, bgcolor=CARD, fill_color=CARD, filled=True,
-                color=TEXT, border_color=BORDER, focused_border_color=CYAN,
-                menu_style=ft.MenuStyle(bgcolor=CARD, elevation=14),
-            ),
-        ], spacing=9)
+        self._search_field = ft.TextField(
+            ref=self.r_search, label="Search application, PID, domain or IP",
+            prefix_icon=ft.Icons.SEARCH_ROUNDED, expand=True,
+            bgcolor=SURFACE, color=TEXT, border_color=BORDER,
+            focused_border_color=CYAN, text_size=11, on_change=apply_filter,
+        )
+        self._filter_dropdown = ft.Dropdown(
+            ref=self.r_filter, value="all", width=270, dense=True,
+            options=[
+                ft.DropdownOption("all", "All applications"),
+                ft.DropdownOption("active", "Active now"),
+                ft.DropdownOption("download", "Highest download"),
+                ft.DropdownOption("upload", "Highest upload"),
+                ft.DropdownOption("unknown", "Unidentified processes"),
+            ],
+            on_select=apply_filter, bgcolor=CARD, fill_color=CARD, filled=True,
+            color=TEXT, border_color=BORDER, focused_border_color=CYAN,
+            menu_style=ft.MenuStyle(bgcolor=CARD, elevation=14),
+        )
+        filters = ft.Row([self._search_field, self._filter_dropdown], spacing=9)
         self._filter_row = filters
 
         self._empty_control = ft.Container(
@@ -174,17 +175,35 @@ class ProcessView:
         return self._root
 
     def set_viewport(self, width: float, height: float):
-        content_width = max(280.0, width - 28.0)
+        content_width = fit(max(280.0, width - 28.0))
         mode = "wide" if content_width >= 900 else "compact" if content_width >= 620 else "narrow"
-        key = (mode, round(content_width), round(height))
+        key = (mode, content_width, round(height))
         if key == self._layout_key or not self._root:
             return
         self._layout_key = key
-        columns = 5 if mode == "wide" else 2 if mode == "compact" else 1
-        metric_width = (content_width - 10 * (columns - 1)) / columns
-        for metric in self._summary_cards:
-            metric.width = metric_width
-        self._name_width = 250 if mode == "wide" else 180 if mode == "compact" else 125
+        # "APLICACIÓN PRINCIPAL" needs about 1120 px of row before it fits in a
+        # fifth of it; narrower desktops drop to three columns instead of
+        # clipping the caption.
+        columns = (
+            5 if content_width >= 1120
+            else 3 if content_width >= 760
+            else 2 if content_width >= 380
+            else 1
+        )
+        widths = split(content_width, columns, 10)
+        for index, metric in enumerate(self._summary_cards):
+            metric.width = widths[index % len(widths)]
+        # "Todas las aplicaciones" does not fit the English-sized control, so
+        # the filter keeps a wider measure wherever the toolbar has the room.
+        self._filter_dropdown.width = 270 if mode != "narrow" else 230
+        # The activity bar is the only elastic column, so a fixed 250 px name
+        # column handed every extra pixel of a maximized window to the bar and
+        # kept truncating the executable names beside it. The name column now
+        # grows with the row and stops once it is clearly the widest one.
+        self._name_width = (
+            fit(min(460.0, max(250.0, content_width * 0.26))) if mode == "wide"
+            else 180 if mode == "compact" else 125
+        )
         self._traffic_width = 118 if mode == "wide" else 92 if mode == "compact" else 72
         self._dest_width = 82 if mode != "narrow" else 64
         for control, value in zip(
@@ -193,7 +212,10 @@ class ProcessView:
         ):
             control.width = value
         self._filter_row.wrap = mode == "narrow"
-        self.r_search.current.width = content_width if mode == "narrow" else None
+        # ``expand`` and a fixed width are mutually exclusive: keeping both set
+        # left the field at its old measure after a resize.
+        self._search_field.expand = mode != "narrow"
+        self._search_field.width = content_width if mode == "narrow" else None
 
     def _apps(self) -> list[dict]:
         if self.s.app_traffic:

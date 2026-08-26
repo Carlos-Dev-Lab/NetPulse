@@ -30,8 +30,9 @@ from .views import (
     ChartsView, DashboardView, HistoryView, LocalPortsView, NetworkView,
     PacketsView, ProcessView, SettingsView,
 )
+from .data_management import DataManagementView
 from .dialogs import close_dialog, open_dialog
-from .i18n import set_language, translate_tree
+from .i18n import set_language, tr, translate_tree
 
 
 UPDATE_INTERVAL_SECONDS = 0.2
@@ -140,7 +141,7 @@ def main(page: ft.Page):
         """Repaint the whole workspace, not only the section on screen.
 
         Flet only reaches the mounted wrapper through ``main_content``; the other
-        seven sections live in ``wrappers`` and would keep the previous palette
+        the remaining sections live in ``wrappers`` and would keep the previous palette
         until they were rebuilt. One shared ``seen`` set walks every root exactly
         once.
         """
@@ -195,9 +196,10 @@ def main(page: ft.Page):
         on_interface_change=on_interface_change,
         alerts=persisted_alerts, retention_days=retention_days,
     )
+    data_v = DataManagementView(db, _page_ref, state)
 
     try:
-        initial_view = max(0, min(7, int(os.getenv("NETPULSE_INITIAL_VIEW", "0"))))
+        initial_view = max(0, min(8, int(os.getenv("NETPULSE_INITIAL_VIEW", "0"))))
     except ValueError:
         initial_view = 0
     _active = [initial_view]
@@ -216,7 +218,10 @@ def main(page: ft.Page):
     w_hist  = _wrap(hist_v.build())
     w_proc  = _wrap(proc_v.build())
     w_sett  = _wrap(sett_v.build())
-    wrappers = [w_dash, w_net, w_ports, w_pkt, w_chart, w_hist, w_proc, w_sett]
+    w_data  = _wrap(data_v.build())
+    # Navigation follows the operator's flow: observe, investigate, analyze,
+    # review history, then use the administrative tools.
+    wrappers = [w_dash, w_net, w_proc, w_pkt, w_chart, w_hist, w_ports, w_data, w_sett]
 
     # ── Header refs ────────────────────────────────────────────────────
     r_dot    = ft.Ref[ft.Container]()
@@ -289,6 +294,7 @@ def main(page: ft.Page):
     _capture_start_time = [None]
     _pending_stats = defaultdict(int)
     _pending_ips = defaultdict(lambda: {"b": 0, "p": 0})
+    _persisted_event_keys: set[str] = set()
 
     def _flush_stats():
         if not state.session_id or not _pending_stats:
@@ -298,6 +304,21 @@ def main(page: ft.Page):
             state.session_id,
             [(ip, values["b"], values["p"]) for ip, values in _pending_ips.items()],
         )
+        db.save_session_applications(state.session_id, state.app_traffic)
+        for app_key, app in state.app_traffic.items():
+            for spike in app.get("spike_events", ()):
+                stamp = spike.get("ts")
+                fingerprint = f"spike:{app_key}:{getattr(stamp, 'isoformat', lambda: str(stamp))()}"
+                if fingerprint in _persisted_event_keys:
+                    continue
+                db.save_session_event(
+                    state.session_id, "application_spike",
+                    f"Traffic spike · {app.get('name') or 'Unknown'}",
+                    f"{float(spike.get('rate', 0)):.1f} KB/s; baseline "
+                    f"{float(spike.get('baseline', 0)):.1f} KB/s",
+                    "warning", stamp, fingerprint,
+                )
+                _persisted_event_keys.add(fingerprint)
         _pending_stats.clear()
         _pending_ips.clear()
 
@@ -308,8 +329,13 @@ def main(page: ft.Page):
             state.reset()
             _pending_stats.clear()
             _pending_ips.clear()
+            _persisted_event_keys.clear()
             state.capturing  = True
             state.session_id = db.new_session(state.interface or "All")
+            db.save_session_event(
+                state.session_id, "capture_started", "Capture started",
+                f"Interface: {state.interface or 'All'}", fingerprint="capture_started",
+            )
             sniffer.start(state.interface if state.interface != "All" else None)
             _capture_start_time[0] = time.time()
             _set_header(True)
@@ -334,7 +360,14 @@ def main(page: ft.Page):
             except Exception:
                 pass
             db.close_session(state.session_id,
-                             state.total_pkts, state.bytes_in, state.bytes_out)
+                             state.total_pkts, state.bytes_in, state.bytes_out,
+                             sniffer.dropped)
+            db.save_session_event(
+                state.session_id, "capture_stopped", "Capture completed",
+                f"{state.total_pkts} packets; {sniffer.dropped} dropped",
+                "warning" if sniffer.dropped else "info",
+                fingerprint="capture_stopped",
+            )
         _set_header(False)
 
     def cleanup(e=None):
@@ -354,6 +387,7 @@ def main(page: ft.Page):
                         state.total_pkts,
                         state.bytes_in,
                         state.bytes_out,
+                        sniffer.dropped,
                     )
                 except Exception:
                     logger.exception("Could not finalize the capture session")
@@ -365,9 +399,9 @@ def main(page: ft.Page):
         stop_capture() if state.capturing else start_capture()
 
     # ── Navigation ─────────────────────────────────────────────────────
-    section_names = ["Overview", "Network discovery", "Local ports",
+    section_names = ["Overview", "Network discovery", "Applications",
                      "Packet explorer", "Performance and capacity", "Session history",
-                     "Applications", "System settings"]
+                     "Local ports", "Data management", "System settings"]
 
     def on_nav(e: ft.ControlEvent):
         idx = e.control.selected_index
@@ -389,7 +423,7 @@ def main(page: ft.Page):
             pass
         if idx == 1:   # Network discovery
             net_v.on_mount()
-        if idx == 2:   # Local ports
+        if idx == 6:   # Local ports
             ports_v.on_mount()
         if idx == 4:   # Performance and capacity
             chart_v.on_mount()
@@ -399,6 +433,8 @@ def main(page: ft.Page):
                 main_content.update()
             except Exception:
                 pass
+        if idx == 7:   # Saved data management
+            data_v.on_mount()
 
     def nav_icon(icon, selected=False):
         return ft.Icon(icon, size=27 if selected else 25)
@@ -422,12 +458,13 @@ def main(page: ft.Page):
         destinations=[
             nav_dest(ft.Icons.DASHBOARD_OUTLINED, ft.Icons.DASHBOARD_ROUNDED, "Overview"),
             nav_dest(ft.Icons.LAN_OUTLINED, ft.Icons.LAN_ROUNDED, "Network"),
-            nav_dest(ft.Icons.PRIVACY_TIP_OUTLINED, ft.Icons.PRIVACY_TIP_ROUNDED,
-                     "Local ports"),
+            nav_dest(ft.Icons.APPS_OUTLINED, ft.Icons.APPS_ROUNDED, "Apps"),
             nav_dest(ft.Icons.TABLE_ROWS_OUTLINED, ft.Icons.TABLE_ROWS_ROUNDED, "Packets"),
             nav_dest(ft.Icons.SPEED_OUTLINED, ft.Icons.SPEED_ROUNDED, "Analytics"),
             nav_dest(ft.Icons.HISTORY_ROUNDED, ft.Icons.HISTORY_ROUNDED, "History"),
-            nav_dest(ft.Icons.APPS_ROUNDED, ft.Icons.APPS_ROUNDED, "Apps"),
+            nav_dest(ft.Icons.PRIVACY_TIP_OUTLINED, ft.Icons.PRIVACY_TIP_ROUNDED,
+                     "Local ports"),
+            nav_dest(ft.Icons.STORAGE_OUTLINED, ft.Icons.STORAGE_ROUNDED, "Data"),
             nav_dest(ft.Icons.SETTINGS_OUTLINED, ft.Icons.SETTINGS_ROUNDED, "Settings"),
         ],
         on_change=on_nav,
@@ -570,6 +607,7 @@ def main(page: ft.Page):
         hist_v.set_viewport(width, height)
         proc_v.set_viewport(width, height)
         sett_v.set_viewport(width, height)
+        data_v.set_viewport(width, height)
         page.update()
 
     main_content = ft.Container(
@@ -599,12 +637,14 @@ def main(page: ft.Page):
     page.update()
     if initial_view == 1:
         net_v.on_mount()
-    elif initial_view == 2:
+    elif initial_view == 6:
         ports_v.on_mount()
     elif initial_view == 4:
         chart_v.on_mount()
     elif initial_view == 5:
         hist_v.on_mount()
+    elif initial_view == 7:
+        data_v.on_mount()
 
     def apply_responsive_layout(width: float, height: float):
         compact = width < 980
@@ -671,6 +711,12 @@ def main(page: ft.Page):
                     # Check alerts
                     alerts = state.check_alerts()
                     _pending_alerts.extend(alerts)
+                    if state.session_id:
+                        for title, message in alerts:
+                            db.save_session_event(
+                                state.session_id, "threshold_alert", title, message,
+                                "warning",
+                            )
 
                     # Save to DB every ~1s (5 ticks × 0.2s)
                     if _tick % DATABASE_FLUSH_TICKS == 0 and state.session_id and _pending_stats:
@@ -694,10 +740,11 @@ def main(page: ft.Page):
 
                 # 4. Status bar
                 if r_sb_pkts.current:
-                    r_sb_pkts.current.value = f"{state.total_pkts:,} packets"
+                    r_sb_pkts.current.value = tr(f"{state.total_pkts:,} packets")
                 if r_sb_sess.current:
-                    r_sb_sess.current.value = (f"Session #{state.session_id}"
-                                               if state.session_id else "No session")
+                    r_sb_sess.current.value = tr(
+                        f"Session #{state.session_id}" if state.session_id
+                        else "No session")
                 # Session elapsed time
                 if r_sb_time.current:
                     if state.capturing and _capture_start_time[0]:
@@ -711,7 +758,7 @@ def main(page: ft.Page):
                 # Dropped packets warn that the displayed rates are incomplete.
                 if r_sb_drop.current:
                     dropped = sniffer.dropped
-                    r_sb_drop.current.value = f"{dropped:,} dropped"
+                    r_sb_drop.current.value = tr(f"{dropped:,} dropped")
                     r_sb_drop.current.color = AMBER if dropped else MUTED
 
                 # 5. Poll CPU/RAM every ~1s (5 ticks)
@@ -738,7 +785,7 @@ def main(page: ft.Page):
                     pkt_v.refresh()
                 elif idx == 4:
                     chart_v.refresh()
-                elif idx == 6:
+                elif idx == 2:
                     proc_v.refresh()
                 # Network/history/settings are event and DB based.
 

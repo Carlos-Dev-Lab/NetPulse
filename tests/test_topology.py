@@ -4,12 +4,15 @@ from tempfile import TemporaryDirectory
 import unittest
 
 import flet as ft
+import flet.canvas as cv
 
 from netpulse.domain.network_scan import NetworkScan, ScanHost
 from netpulse.domain.topology import build_topology
 from netpulse.infrastructure.database import DB
 from netpulse.infrastructure.nmap_scanner import NmapScanner
 from netpulse.presentation.views import NetworkView
+from netpulse.presentation.theme import appearance_palette, recolor_tree
+from netpulse.presentation.topology_map import MIN_FIT_ZOOM
 
 
 class TopologyTests(unittest.TestCase):
@@ -28,7 +31,7 @@ class TopologyTests(unittest.TestCase):
             available,
         )
 
-    def test_network_view_uses_native_responsive_grid_for_rendered_nodes(self):
+    def test_network_view_uses_interactive_radial_map_for_rendered_nodes(self):
         with TemporaryDirectory() as directory:
             view = NetworkView(
                 DB(Path(directory) / "topology.db"), NmapScanner(), [None]
@@ -42,12 +45,50 @@ class TopologyTests(unittest.TestCase):
 
             view._render_topology(scan)
 
-            self.assertEqual(len(view._topology_grids), 1)
-            grid, node_count = view._topology_grids[0]
-            self.assertIsInstance(grid, ft.GridView)
-            self.assertEqual(node_count, 14)
-            self.assertEqual(grid.max_extent, 210)
-            self.assertTrue(all(node.width is None for node in grid.controls))
+            topology = view._interactive_topology
+            self.assertIsNotNone(topology)
+            self.assertEqual(len(topology._devices), 14)
+            self.assertIsInstance(topology.control, ft.Column)
+            self.assertIsInstance(topology.control.controls[1], ft.Row)
+
+    def test_protocol_filter_and_node_selection_update_the_map(self):
+        with TemporaryDirectory() as directory:
+            view = NetworkView(DB(Path(directory) / "topology.db"), NmapScanner(), [None])
+            view.build()
+            now = datetime(2026, 1, 1)
+            from netpulse.domain.network_scan import ScanService
+            scan = NetworkScan(
+                "192.168.1.0/24", "quick", "nmap", now, now, 2,
+                hosts=[
+                    ScanHost("192.168.1.1"),
+                    ScanHost("192.168.1.10", services=[
+                        ScanService(443, "tcp", "open", "https")]),
+                    ScanHost("192.168.1.20", services=[
+                        ScanService(53, "udp", "open", "dns")]),
+                ],
+            )
+            view._render_topology(scan)
+            topology = view._interactive_topology
+
+            topology.set_protocol("UDP")
+            self.assertEqual([d.node.address for d in topology._visible_devices()],
+                             ["192.168.1.20"])
+            topology.select("192.168.1.20")
+            self.assertEqual(topology.selected_address, "192.168.1.20")
+            selected = next(device for device in topology._devices
+                            if device.node.address == "192.168.1.20")
+            selected_control = topology._node_control(selected)
+            self.assertIsNotNone(selected_control.bgcolor)
+            self.assertIsNotNone(selected_control.border)
+            self.assertTrue(selected_control.content.controls[1].visible)
+            topology._zoom(10)
+            self.assertEqual(topology.zoom, 1.65)
+            topology._zoom(-10)
+            # The floor is the same one the automatic fit uses: a dense scan
+            # has to be visible whole before it has to be readable.
+            self.assertEqual(topology.zoom, MIN_FIT_ZOOM)
+            self.assertEqual(topology._table.scroll, ft.ScrollMode.ALWAYS)
+            self.assertEqual(topology._table.height, 184)
 
     def test_groups_nodes_by_segment_and_assigns_roles_and_aliases(self):
         now = datetime(2026, 1, 1)
@@ -70,6 +111,19 @@ class TopologyTests(unittest.TestCase):
         self.assertEqual(topology[0].nodes[1].role, "local")
         self.assertEqual(topology[1].nodes[0].label, "Servidor")
         self.assertEqual(topology[1].nodes[0].trust_status, "authorized")
+
+    def test_canvas_connections_follow_light_and_dark_themes(self):
+        dark = appearance_palette("netpulse", "cyan")
+        light = appearance_palette("daylight", "cyan")
+        canvas = cv.Canvas(shapes=[
+            cv.Rect(0, 0, 20, 20, paint=ft.Paint(color=dark["bg"])),
+            cv.Line(0, 0, 20, 20, paint=ft.Paint(color=dark["cyan"])),
+        ])
+
+        recolor_tree(canvas, dark, light)
+
+        self.assertEqual(canvas.shapes[0].paint.color, light["bg"])
+        self.assertEqual(canvas.shapes[1].paint.color, light["cyan"])
 
 
 if __name__ == "__main__":

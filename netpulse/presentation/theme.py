@@ -2,6 +2,7 @@
 NetPulse — Color System & UI Helpers
 Dark glassmorphism theme, compatible with Flet 0.85+
 """
+import math
 import sys
 
 import flet as ft
@@ -155,11 +156,12 @@ def recolor_tree(control, old_palette: dict, new_palette: dict, seen=None) -> No
                 setattr(control, attr, changed)
         except (AttributeError, TypeError, ValueError):
             pass
-    for attr in ("content", "title", "subtitle", "leading", "trailing", "icon"):
+    for attr in ("content", "title", "subtitle", "leading", "trailing", "icon",
+                 "paint"):
         child = getattr(control, attr, None)
         if child is not None and not isinstance(child, (str, int, float, bool)):
             recolor_tree(child, old_palette, new_palette, seen)
-    for attr in ("controls", "actions", "destinations", "rows", "cells"):
+    for attr in ("controls", "actions", "destinations", "rows", "cells", "shapes"):
         children = getattr(control, attr, None)
         if children:
             for child in list(children):
@@ -249,6 +251,12 @@ PALETTE_CONSUMERS = (
     "netpulse.presentation.views",
     "netpulse.presentation.application_traffic",
     "netpulse.presentation.charts",
+    # The topology map rebuilds its whole surface — canvas, nodes, detail panel
+    # and connection table — on every selection and filter change. Leaving it
+    # out meant a map redrawn after a theme change came back in the dark
+    # preset: white ink on a light card, dark plates over a bright canvas.
+    "netpulse.presentation.topology_map",
+    "netpulse.presentation.data_management",
     "netpulse.presentation.app",
 )
 
@@ -297,6 +305,10 @@ def make_theme(accent: str = CYAN, surface: str = SURFACE,
     return ft.Theme(
         color_scheme_seed=accent,
         visual_density=density,
+        # Canvas defaults to Material grey when this role is omitted. Network
+        # topology and charts can occupy almost the whole compact viewport, so
+        # that fallback appeared as a large unpainted rectangle.
+        canvas_color=palette.get("bg", BG),
         color_scheme=ft.ColorScheme(
             primary=accent,
             secondary=secondary,
@@ -312,6 +324,50 @@ def make_theme(accent: str = CYAN, surface: str = SURFACE,
 def theme_mode(palette: dict | None) -> ft.ThemeMode:
     """Map an appearance palette to the Flet brightness it expects."""
     return ft.ThemeMode.LIGHT if (palette or {}).get("light") else ft.ThemeMode.DARK
+
+
+# ── Geometry ──────────────────────────────────────────────────────────────────
+def snap(value: float) -> float:
+    """Round a computed dimension to a whole logical pixel.
+
+    Reflow maths such as ``(width - 36) / 5`` produced sizes like 437.75 or
+    587.666…, and Flutter then painted the 1 px card borders across two device
+    pixels: adjacent cards in the same row looked like they had different
+    frame weights. Whole pixels keep the chrome uniform at every window size.
+    """
+    return float(round(value))
+
+
+def fit(value: float) -> float:
+    """Round a dimension DOWN to a whole logical pixel.
+
+    ``snap`` rounds to the nearest pixel, which is right for a size derived
+    *inside* a row but wrong for the row itself. Flet Desktop reports the
+    centre pane as 1601.666… px on a maximized 2560x1600 screen at 150 %
+    scaling, so a row snapped to 1574 is a third of a pixel wider than the
+    space Flutter actually hands it. Every responsive row here is a
+    ``Row(wrap=True)``, which is a Flutter ``Wrap``: that fraction is enough
+    for it to push the last child onto a line of its own, and the maximized
+    dashboard collapsed from four metric columns to three, stacked its CPU and
+    RAM cards, and dropped the protocol donut below the traffic chart. Rounding
+    down can never overflow the parent.
+    """
+    return float(math.floor(value))
+
+
+def split(total: float, count: int, spacing: float) -> list[float]:
+    """Divide ``total`` into ``count`` whole-pixel columns that fill it exactly.
+
+    Rounding each column independently leaves or steals up to one pixel per
+    column, which shows up as a ragged right edge. The remainder is handed to
+    the leading columns instead, so the row always ends flush.
+    """
+    if count <= 0:
+        return []
+    usable = total - spacing * (count - 1)
+    base = int(usable // count)
+    remainder = int(round(usable - base * count))
+    return [float(base + (1 if index < remainder else 0)) for index in range(count)]
 
 
 # ── Reusable builders ─────────────────────────────────────────────────────────

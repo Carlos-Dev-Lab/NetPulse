@@ -71,7 +71,9 @@ cada 200 ms y se adapta al tamaño y al escalado DPI de la ventana de Windows.
 - Verificación automática de servicios expuestos que quedaron resueltos en el
   análisis siguiente.
 - Mapa de red agrupado por segmentos `/24`, con identificación del equipo
-  local, router probable, riesgo y confianza de cada nodo.
+  local, router probable, riesgo y confianza de cada nodo. Incluye filtros por
+  protocolo, selección con detalle del equipo y conexiones, zoom y adaptación
+  específica para la ventana mínima de escritorio sin perder nodos.
 - Inventario persistente basado en activos estables (`device_id`), con IP, MAC,
   hostname, sistema, servicios y apariciones tratados como observaciones.
 - Estados, criticidad, responsable, ubicación, etiquetas, confianza, historial y
@@ -92,6 +94,7 @@ cada 200 ms y se adapta al tamaño y al escalado DPI de la ventana de Windows.
 
 Los escaneos programados se ejecutan mientras NetPulse permanece abierto. La
 agenda y su próxima ejecución se conservan en SQLite entre reinicios.
+
 - Puntuación explicable de salud de `0` a `100`, con cada descuento detallado
   por servicios expuestos, confianza, cambios, scripts NSE y cobertura.
 - Historial de escaneos consultable desde la interfaz.
@@ -129,6 +132,10 @@ agenda y su próxima ejecución se conservan en SQLite entre reinicios.
 - Principales IP y conexiones de cada sesión.
 - Resultados Nmap normalizados por escaneo, dispositivo, servicio y alerta.
 - Enriquecimiento asíncrono de IP con DNS inverso, país y ASN.
+- Comparación de dos sesiones, tendencias diarias y semanales y exportación
+  individual de la evidencia histórica.
+- Copias verificadas de SQLite, restauración con respaldo preventivo y
+  exportación integral en ZIP con manifiesto, JSON y CSV.
 
 ## Requisitos
 
@@ -277,7 +284,10 @@ Después de un análisis ofrece este flujo:
 3. **Centro de diagnóstico** ordena los problemas por IP y explica prioridad,
    motivo, acción recomendada, evidencia y controles que quedaron resueltos.
 4. **Mapa de red** agrupa los nodos por segmento `/24`, identifica el equipo
-   local y el router probable, y colorea cada nodo por riesgo y confianza.
+   local y el router probable, y colorea cada nodo por riesgo y confianza. El
+   lienzo es interactivo, permite filtrar TCP, UDP e ICMP, inspeccionar un nodo
+   y consultar las conexiones descubiertas en una tabla con desplazamiento
+   propio.
 5. **Dispositivos y servicios** permite seleccionar una IP para filtrar sus
    alertas. Al pulsar un puerto se abre su explicación y una verificación Nmap
    acotada.
@@ -359,10 +369,25 @@ Permite seleccionar una sesión de captura guardada y consultar:
 - interfaz utilizada;
 - paquetes y volumen total;
 - tráfico histórico por segundo;
-- principales IP, bytes, paquetes y última actividad.
+- principales IP, bytes, paquetes y última actividad;
+- aplicaciones y procesos con descarga, subida, destinos y picos;
+- alertas, eventos relevantes y paquetes descartados;
+- comparación entre sesiones y tendencias diarias y semanales;
+- exportación individual en JSON con toda la evidencia agregada.
 
 Este historial corresponde a captura pasiva. El historial de Nmap se consulta
 desde la vista **Network**.
+
+### Data
+
+**Data management** permite buscar, seleccionar y eliminar sesiones, escaneos,
+activos, comprobaciones de calidad, perfiles, programaciones y eventos. También
+crea y restaura copias SQLite verificadas y exporta todos los datos en un ZIP
+con manifiesto, JSON y CSV por tabla. Antes de restaurar se crea automáticamente
+un respaldo de seguridad de la base actual.
+
+Los respaldos se guardan en `data/backups/` y las exportaciones en `exports/`.
+La restauración permanece deshabilitada durante una captura activa.
 
 ### Applications
 
@@ -397,8 +422,8 @@ Incluye:
 - información sobre la base SQLite y requisitos del sistema.
 
 Los cambios de interfaz se aplican al iniciar la siguiente captura. Los
-umbrales de alerta se mantienen en memoria durante la ejecución actual y `0`
-los desactiva.
+umbrales de alerta, el idioma, la retención y la apariencia se conservan en
+`data/settings.json`; un umbral con valor `0` queda desactivado.
 
 ## Escaneos Nmap
 
@@ -456,7 +481,8 @@ NetPulse persiste:
 - resúmenes agregados de tráfico aproximadamente una vez por segundo;
 - IP principales y sus contadores acumulados;
 - metadatos de escaneos Nmap;
-- dispositivos, servicios, riesgo, alertas y cambios detectados.
+- dispositivos, servicios, riesgo, alertas y cambios detectados;
+- aplicaciones/procesos agregados, destinos, alertas y eventos por sesión.
 
 NetPulse **no guarda el contenido completo de los paquetes**. Los paquetes
 recientes se mantienen temporalmente en memoria para alimentar la interfaz.
@@ -545,6 +571,8 @@ network_analyzer/
 │   └── presentation/
 │       ├── app.py                  Composición y ciclo de actualización
 │       ├── application_traffic.py  Modelo de presentación por aplicación
+│       ├── data_management.py      Respaldo, restauración, exportación y limpieza
+│       ├── topology_map.py         Mapa interactivo y adaptable de la red
 │       ├── views.py                Vistas de escritorio adaptables
 │       ├── charts.py               Gráficos personalizados sensibles al tema
 │       ├── dialogs.py              Apertura y cierre de diálogos Flet
@@ -568,6 +596,11 @@ network_analyzer/
 │   ├── test_persistence.py         Preferencias, retención y descartes
 │   ├── test_light_theme.py         Paletas, contraste y gráficos
 │   ├── test_colorimetry.py         Contraste real de las 8 pestañas x 6 temas
+│   ├── test_data_management.py     Respaldos, restauración y gestión manual
+│   ├── test_history_archive.py     Evidencia, comparación y exportación histórica
+│   ├── test_layout_geometry.py     Geometría adaptable y regresiones visuales
+│   ├── test_topology.py            Construcción del modelo de topología
+│   ├── test_topology_map.py        Mapa, filtros, selección y modo compacto
 │   ├── test_startup.py             Arranque completo sin abrir ventana
 │   └── test_system.py              Dependencias y componentes Flet
 ├── .github/workflows/tests.yml     Integración continua en Windows
@@ -600,7 +633,9 @@ sistema operativo.
 .\.venv\Scripts\python.exe -W error::DeprecationWarning -m unittest discover -s tests -v
 ```
 
-La revisión actual ejecuta **155 pruebas automatizadas**. El mismo comando se ejecuta en integración continua sobre Windows con Python 3.10, 3.11 y 3.12 (`.github/workflows/tests.yml`).
+La revisión actual ejecuta **197 pruebas automatizadas**. El mismo comando se
+ejecuta en integración continua sobre Windows con Python 3.10, 3.11 y 3.12
+(`.github/workflows/tests.yml`).
 
 ### Comprobación de sintaxis
 
@@ -647,21 +682,26 @@ persistencia están cubiertos por pruebas.
   retención.
 - Registro con rotación en `data/netpulse.log`.
 - Contador de paquetes descartados visible en la barra de estado.
+- Historial enriquecido con aplicaciones, procesos, eventos, comparación de
+  sesiones, tendencias y exportación individual.
+- Administración manual de datos con respaldo y restauración SQLite y
+  exportación integral verificable.
+- Mapa de red interactivo con detalle de nodos, filtros de protocolo, tabla de
+  conexiones y geometría probada en la ventana mínima de `900 x 620`.
 - Temas claros con contraste verificado y repintado completo en caliente.
 - Iconografía Material unificada y textos obsoletos corregidos.
 - `pyproject.toml` e integración continua en Windows con Python 3.10–3.12.
 
 ### Prioridades siguientes
 
-1. Copia y restauración de SQLite bajo demanda desde la interfaz.
-2. Captura IPv6 y mejor seguimiento del ciclo de vida de conexiones y procesos.
-3. Convertir la planificación en un servicio de Windows que funcione con la UI
+1. Captura IPv6 y mejor seguimiento del ciclo de vida de conexiones y procesos.
+2. Convertir la planificación en un servicio de Windows que funcione con la UI
    cerrada.
-4. Instalador firmado, actualización segura y configuración explícita de
+3. Instalador firmado, actualización segura y configuración explícita de
    privacidad para el enriquecimiento externo.
-5. Dividir los módulos grandes de vistas y base de datos para facilitar su
+4. Dividir los módulos grandes de vistas y base de datos para facilitar su
    mantenimiento.
-6. Añadir pruebas end-to-end de escritorio, sesiones prolongadas, alto volumen
+5. Añadir pruebas end-to-end de escritorio, sesiones prolongadas, alto volumen
    y bases migradas desde versiones anteriores.
 
 ## Solución de problemas
@@ -718,4 +758,4 @@ el enriquecimiento no responda.
 El proyecto se ha comprobado con Python 3.12, Flet 0.85.3, Scapy 2.7.0,
 psutil 7.2.2, Nmap 7.99 y Npcap en Windows. La validación incluye interfaz de
 escritorio, captura real, escaneo Nmap, persistencia y pruebas
-automatizadas. La suite actual contiene 155 pruebas.
+automatizadas. La suite actual contiene 197 pruebas.

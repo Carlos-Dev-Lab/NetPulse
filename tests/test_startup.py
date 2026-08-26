@@ -178,7 +178,7 @@ class StartupTests(unittest.TestCase):
         dark = appearance_palette("netpulse", "cyan")
         self.assertEqual(page.theme_mode, ft.ThemeMode.DARK)
 
-        self._navigate(page, 7)   # System settings
+        self._navigate(page, 8)   # System settings
         button = self._find_apply_appearance(page)
         for control in self._walk(page.controls[0]):
             if isinstance(control, ft.Dropdown) and control.label == "Visual theme":

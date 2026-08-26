@@ -3,6 +3,7 @@
 import asyncio
 import csv
 import io
+import os
 import threading
 import time
 from datetime import datetime
@@ -40,11 +41,25 @@ from netpulse.services.reporting import export_scan_reports
 from .charts import BarChartCanvas, LineChartCanvas, PieChartCanvas, SparklineCanvas
 from .dialogs import close_dialog, open_dialog
 from .i18n import get_language, tr, translate_tree
+from .topology_map import NetworkTopologyMap
 from .theme import (
     AMBER, BLUE, BORDER, CARD, CYAN, DIM, GREEN, MUTED, PROTO_COLORS,
     PROTO_LIST, PURPLE, RED, SURFACE, TEXT, badge, card, proto_color,
-    section_title, tint, view_heading,
+    fit, section_title, snap, split, tint, view_heading,
 )
+
+def _apply_widths(controls, widths) -> None:
+    """Assign one row's column widths to a wrapping set of cards.
+
+    ``widths`` describes a single visual row. When fewer columns than cards are
+    shown the cards wrap, so the sequence is repeated: every card in a given
+    position keeps the exact width of the card above it.
+    """
+    if not widths:
+        return
+    for index, control in enumerate(controls):
+        control.width = widths[index % len(widths)]
+
 
 class DashboardView:
     def __init__(self, state: AppState):
@@ -77,7 +92,22 @@ class DashboardView:
         self._responsive_rows = []
         self._layout_mode = None
 
+    # The peak tile prints two figures, so its value is set in a smaller face
+    # than the single-number tiles. Reserving one line box for all four keeps
+    # their captions and values on the same baseline across the row.
+    VALUE_LINE_HEIGHT = 34
+
+    def _value_line(self, ref, size):
+        return ft.Container(
+            content=ft.Text(ref=ref, value="0", size=size, color=None,
+                            weight=ft.FontWeight.BOLD, font_family="monospace"),
+            height=self.VALUE_LINE_HEIGHT,
+            alignment=ft.Alignment.CENTER_LEFT,
+        )
+
     def _tile(self, title, ref_val, ref_sub, icon, color):
+        value = self._value_line(ref_val, 26)
+        value.content.color = color
         return card(
             ft.Column([
                 ft.Row([
@@ -85,8 +115,7 @@ class DashboardView:
                                  bgcolor=tint(color, .13), border_radius=14, padding=14),
                     ft.Column([
                         ft.Text(title, size=10, color=DIM, weight=ft.FontWeight.W_600),
-                        ft.Text(ref=ref_val, value="0", size=26, color=color,
-                                weight=ft.FontWeight.BOLD, font_family="monospace"),
+                        value,
                     ], spacing=2),
                 ], spacing=12),
                 ft.Text(ref=ref_sub, value="", size=11, color=MUTED),
@@ -119,6 +148,10 @@ class DashboardView:
         self.r_cpu_bar = ft.Ref[ft.ProgressBar]()
         self.r_ram_bar = ft.Ref[ft.ProgressBar]()
 
+        peak_value = self._value_line(self.r_peak, 18)
+        peak_value.content.value = "0 KB/s"
+        peak_value.content.color = AMBER
+
         metric_row = ft.Row([
                 self._tile("TOTAL PACKETS", self.r_pkts, self.r_pps,
                            ft.Icons.HUB_ROUNDED, CYAN),
@@ -132,8 +165,7 @@ class DashboardView:
                                      bgcolor=tint(AMBER, .13), border_radius=14, padding=14),
                         ft.Column([
                             ft.Text("PEAK BW", size=10, color=DIM, weight=ft.FontWeight.W_600),
-                            ft.Text(ref=self.r_peak, value="0 KB/s", size=18, color=AMBER,
-                                    weight=ft.FontWeight.BOLD, font_family="monospace"),
+                            peak_value,
                         ], spacing=2),
                     ], spacing=12),
                     ft.Text("↓ in  /  ↑ out peak", size=11, color=MUTED),
@@ -212,13 +244,13 @@ class DashboardView:
 
     def set_viewport(self, width: float, height: float):
         """Reflow using the central viewport measured by Flutter Desktop."""
-        content_width = max(280.0, width - 28.0)
-        content_height = max(420.0, height - 28.0)
+        content_width = fit(max(280.0, width - 28.0))
+        content_height = fit(max(420.0, height - 28.0))
         # Two metric columns remain readable down to a 900 px physical window
         # at common Windows DPI settings; a single column wastes height and
         # makes the dashboard appear overflowed.
         mode = "wide" if content_width >= 820 else "compact" if content_width >= 380 else "narrow"
-        layout_key = (mode, round(content_width), round(content_height))
+        layout_key = (mode, content_width, content_height)
         if layout_key == self._layout_mode or not self._metric_cards:
             return
         self._layout_mode = layout_key
@@ -226,38 +258,46 @@ class DashboardView:
             row.width = content_width
 
         metric_count = 4 if mode == "wide" else 2 if mode == "compact" else 1
-        metric_width = (content_width - 12 * (metric_count - 1)) / metric_count
-        for control in self._metric_cards:
-            control.width = metric_width
+        _apply_widths(self._metric_cards, split(content_width, metric_count, 12))
 
         system_count = 2 if mode != "narrow" else 1
-        system_width = (content_width - 12 * (system_count - 1)) / system_count
-        for control in self._system_cards:
-            control.width = system_width
+        _apply_widths(self._system_cards, split(content_width, system_count, 12))
         if mode == "wide":
-            self._chart_cards[0].width = content_width * 0.62 - 6
-            self._chart_cards[1].width = content_width * 0.38 - 6
-            detail_width = (content_width - 12) / 2
+            # 62/38 is the intended emphasis; the pair must still end flush
+            # with the metric row above it.
+            trend_width = snap(content_width * 0.62 - 6)
+            self._chart_cards[0].width = trend_width
+            self._chart_cards[1].width = content_width - 12 - trend_width
+            detail_width = split(content_width, 2, 12)
         else:
             self._chart_cards[0].width = self._chart_cards[1].width = content_width
-            detail_width = content_width
-        for control in self._detail_cards:
-            control.width = detail_width
+            detail_width = [content_width, content_width]
+        detail_height = snap(max(210.0, min(300.0, content_height * 0.28)))
+        for control, value in zip(self._detail_cards, detail_width):
+            control.width = value
             # Both operational lists form one visual pair. Their content can
             # grow independently, so a shared height plus internal scrolling
             # prevents one card from becoming taller than the other.
-            control.height = max(210.0, min(300.0, content_height * 0.28))
+            control.height = detail_height
 
-        # Use the vertical room left after metrics, system cards, section
-        # headings and the detail row. This keeps fullscreen layouts from
-        # collapsing into the upper half while preserving a compact canvas in
-        # short windows.
-        chart_height = max(145.0, min(360.0, content_height - 410.0))
+        # The dashboard is the at-a-glance view, so the whole stack has to fit
+        # the viewport rather than push the two operational lists under the
+        # fold — maximized, "Conexiones principales" and "Flujo de paquetes"
+        # were cut in half by the status bar. 380 px is what the heading, the
+        # metric row, the system row, the chart card chrome and the spacings
+        # between them take; whatever the detail row leaves of the rest is the
+        # chart canvas.
+        chart_height = snap(max(
+            145.0, min(360.0, content_height - 380.0 - detail_height)
+        ))
         chart_card_height = chart_height + 58.0
         for control in self._chart_cards:
             control.height = chart_card_height
-        line_width = max(240.0, self._chart_cards[0].width - 28.0)
-        pie_size = min(220.0, chart_height, self._chart_cards[1].width - 28.0)
+        line_width = snap(max(240.0, self._chart_cards[0].width - 28.0))
+        # The donut used to stop growing at 220 px, so on a 1920 desktop it sat
+        # as a small ring inside a 670 px card. It now tracks the space it has.
+        pie_size = snap(max(150.0, min(chart_height,
+                                       self._chart_cards[1].width - 48.0)))
         self.line_chart.resize(line_width, chart_height)
         self.pie_chart.resize(pie_size)
 
@@ -431,6 +471,7 @@ class NetworkView:
         self._history_scan_button = None
         self._topology_nodes = []
         self._topology_grids = []
+        self._interactive_topology = None
         self._viewport_content_width = 1000.0
         self._layout_key = None
         self._disposed = False
@@ -774,13 +815,21 @@ class NetworkView:
             )
             self._safe_page_update()
 
+        # A bare string label is laid out against the button's intrinsic width,
+        # so the Spanish text lost its last characters at mid desktop widths
+        # even though the button was 600 px wide. An explicit non-wrapping
+        # Text is measured against the space the button actually has.
         self._new_scan_button = ft.Button(
-            content="NEW SCAN", icon=ft.Icons.ADD_CHART_ROUNDED, expand=True,
+            content=ft.Text("NEW SCAN", size=12, weight=ft.FontWeight.W_600,
+                            no_wrap=True, text_align=ft.TextAlign.CENTER),
+            icon=ft.Icons.ADD_CHART_ROUNDED, expand=True,
             color=CYAN, bgcolor=tint(CYAN, .17),
             on_click=lambda e: select_scan_mode("new"),
         )
         self._history_scan_button = ft.Button(
-            content="VIEW PREVIOUS SCAN", icon=ft.Icons.HISTORY_ROUNDED, expand=True,
+            content=ft.Text("VIEW PREVIOUS SCAN", size=12, weight=ft.FontWeight.W_600,
+                            no_wrap=True, text_align=ft.TextAlign.CENTER),
+            icon=ft.Icons.HISTORY_ROUNDED, expand=True,
             color=MUTED, bgcolor=tint(MUTED, .05),
             on_click=lambda e: select_scan_mode("history"),
         )
@@ -800,9 +849,25 @@ class NetworkView:
                 expand=True,
             )
 
+        def on_network_tab_change(event):
+            # The map is an inspection workspace of its own. Giving it the
+            # viewport occupied by search and KPI cards matches the focused
+            # canvas layout while the other tabs retain their shared context.
+            map_active = event.control.selected_index == 3
+            self._search_card.visible = not map_active
+            self._summary_row.visible = not map_active
+            self._safe_page_update()
+
+        try:
+            initial_network_tab = max(0, min(4, int(
+                os.getenv("NETPULSE_INITIAL_NETWORK_TAB", "0")
+            )))
+        except ValueError:
+            initial_network_tab = 0
         self._network_tabs = ft.Tabs(
-            length=5, selected_index=0, expand=True,
+            length=5, selected_index=initial_network_tab, expand=True,
             animation_duration=180,
+            on_change=on_network_tab_change,
             content=ft.Column([
                 ft.TabBar(
                     tabs=[
@@ -827,6 +892,9 @@ class NetworkView:
                 ], expand=True),
             ], spacing=8, expand=True),
         )
+        if initial_network_tab == 3:
+            self._search_card.visible = False
+            self._summary_row.visible = False
 
         return ft.Column([
             view_heading("Network discovery", "Inventory devices, exposed services and topology changes",
@@ -837,11 +905,11 @@ class NetworkView:
         ], spacing=12, expand=True)
 
     def set_viewport(self, width: float, height: float):
-        content_width = max(300.0, width - 28.0)
+        content_width = fit(max(300.0, width - 28.0))
         self._viewport_content_width = content_width
-        content_height = max(420.0, height - 28.0)
+        content_height = fit(max(420.0, height - 28.0))
         mode = "wide" if content_width >= 760 else "compact" if content_width >= 380 else "narrow"
-        key = (mode, round(content_width), round(content_height))
+        key = (mode, content_width, content_height)
         if key == self._layout_key or not self._summary_cards:
             return
         self._layout_key = key
@@ -859,16 +927,24 @@ class NetworkView:
         self._local_ports_card.width = content_width
         self._network_tabs.width = content_width
 
-        summary_count = 5 if mode == "wide" else 2 if mode == "compact" else 1
-        summary_width = (content_width - 12 * (summary_count - 1)) / summary_count
-        for control in self._summary_cards:
-            control.width = summary_width
+        # Five columns need roughly 1120 px before "DISPOSITIVOS EN LÍNEA" stops
+        # fitting beside its icon; below that the row drops to three so the
+        # caption is never clipped mid-word.
+        summary_count = (
+            5 if content_width >= 1120
+            else 3 if content_width >= 760
+            else 2 if content_width >= 380
+            else 1
+        )
+        _apply_widths(self._summary_cards, split(content_width, summary_count, 12))
         for grid, node_count in self._topology_grids:
             columns = max(1, round(
                 (content_width - 40.0 + 8.0) /
                 (self._topology_card_width(content_width) + 8.0)
             ))
-            grid.height = max(156.0, ((node_count + columns - 1) // columns) * 156.0)
+            grid.height = snap(max(156.0, ((node_count + columns - 1) // columns) * 156.0))
+        if self._interactive_topology:
+            self._interactive_topology.resize(max(280.0, content_width - 28.0))
         if mode == "narrow":
             self.r_target.current.width = 240
             self.r_profile.current.width = 150
@@ -878,9 +954,25 @@ class NetworkView:
             self.r_profile.current.width = 150
             self.r_scan.current.width = 150
         else:
-            self.r_target.current.width = 300
             self.r_profile.current.width = 180
             self.r_scan.current.width = 150
+            # A 300 px target field left the rest of the scan card empty on a
+            # wide desktop. It takes the room the method selector, the button
+            # and the progress ring do not need.
+            self.r_target.current.width = snap(
+                max(300.0, content_width - 28.0 - 180 - 150 - 18 - 30)
+            )
+        # ``_network_tabs`` expands, so the tab region always reaches the
+        # bottom of the viewport; the scan form only needs about 270 px of it.
+        # On a maximized window that left a third of the section as bare
+        # background below the card. The panel now keeps a floor so the empty
+        # room sits inside the frame, the way it does on the other four tabs.
+        # The floor is only applied where it is comfortably taller than the
+        # form itself, so a short window never clips the card contents.
+        panel_floor = fit(content_height - 404.0)
+        floor = panel_floor if mode == "wide" and panel_floor >= 420.0 else None
+        self._scan_card.height = floor
+        self._history_card.height = floor
 
     @staticmethod
     def _topology_card_width(content_width: float) -> float:
@@ -891,7 +983,7 @@ class NetworkView:
         # service badges wrap; using a larger target leaves a full card-sized
         # strip unused on 125–150% scaled desktop displays.
         columns = max(1, min(9, int((available + 8.0) // 188.0)))
-        return (available - 8.0 * (columns - 1)) / columns
+        return float(int((available - 8.0 * (columns - 1)) // columns))
 
     def _refresh_local_ports(self):
         if not self.r_local_ports.current:
@@ -1662,134 +1754,24 @@ class NetworkView:
             item.get("ip", "") for item in list_interfaces() if item.get("ip")
         }
         segments = build_topology(scan, inventory, local_addresses)
-        trust_colors = {"authorized": GREEN, "known": BLUE, "blocked": RED, "new": AMBER}
-        role_icons = {
-            "router": ft.Icons.ROUTER_ROUNDED,
-            "local": ft.Icons.COMPUTER_ROUNDED,
-            "device": ft.Icons.DEVICES_OTHER_ROUNDED,
-        }
-        controls = []
         self._topology_nodes = []
         self._topology_grids = []
         total_nodes = sum(len(segment.nodes) for segment in segments)
         self.r_topology_summary.current.value = tr(
             f"{len(segments)} segments · {total_nodes} nodes · select a node to filter alerts"
         )
-        for segment in segments:
-            nodes = []
-            for node in segment.nodes:
-                host = hosts_by_address[node.address]
-                risk_color = self._risk_color(node.risk_level)
-                trust_color = trust_colors.get(node.trust_status, MUTED)
-                service_controls = []
-                visible_services = host.open_ports[:3]
-                for service in visible_services:
-                    service_color = self._risk_color(service.risk_level)
-                    service_controls.append(ft.Container(
-                        content=ft.Text(
-                            f"{service.port}/{service.protocol} {service.name}",
-                            color=service_color, size=8,
-                        ),
-                        bgcolor=tint(service_color, .08),
-                        border=ft.Border.all(1, tint(service_color, .18)),
-                        border_radius=5,
-                        padding=ft.padding.Padding.symmetric(horizontal=5, vertical=2),
-                        ink=True, tooltip=tr("Explain risk and verification"),
-                        on_click=lambda e, address=node.address, item=service:
-                            self._show_service_explanation(address, item),
-                    ))
-                hidden_service_count = len(host.open_ports) - len(visible_services)
-                if hidden_service_count:
-                    service_controls.append(ft.Container(
-                        content=ft.Text(tr(f"+{hidden_service_count} more"),
-                                        color=CYAN, size=8,
-                                        weight=ft.FontWeight.W_700),
-                        bgcolor=tint(CYAN, .07),
-                        border=ft.Border.all(1, tint(CYAN, .16)),
-                        border_radius=5,
-                        padding=ft.padding.Padding.symmetric(horizontal=5, vertical=2),
-                        tooltip=tr("Open the device to view all services"),
-                    ))
-                if not service_controls:
-                    service_controls = [ft.Text(
-                        tr("No open ports in this scan profile"), color=MUTED, size=8
-                    )]
-                node_card = ft.Container(
-                    content=ft.Column([
-                        ft.Row([
-                            ft.Icon(role_icons[node.role], color=risk_color, size=20),
-                            ft.Column([
-                                ft.Text(node.label, color=TEXT, size=10,
-                                        weight=ft.FontWeight.W_700,
-                                        overflow=ft.TextOverflow.ELLIPSIS),
-                                ft.Text(node.address, color=CYAN, size=8,
-                                        font_family="monospace"),
-                            ], spacing=1, expand=True),
-                            ft.Container(width=8, height=8, bgcolor=trust_color,
-                                         border_radius=4,
-                                         tooltip=tr(node.trust_status.upper())),
-                            ft.IconButton(
-                                icon=ft.Icons.EDIT_NOTE_ROUNDED, icon_color=CYAN,
-                                icon_size=15, tooltip=tr("Edit device inventory"),
-                                on_click=lambda e, address=node.address:
-                                    self._edit_inventory(address),
-                            ),
-                        ], spacing=5),
-                        ft.Row([
-                            ft.Text(tr(node.risk_level.upper()), color=risk_color,
-                                    size=8, weight=ft.FontWeight.W_700),
-                            ft.Text(f"{host.risk_score}/100", color=risk_color, size=8),
-                            ft.Text(tr(node.trust_status.upper()), color=trust_color,
-                                    size=8, weight=ft.FontWeight.W_700),
-                        ], spacing=6),
-                        ft.Container(
-                            content=ft.Row(service_controls, spacing=4, wrap=True,
-                                           run_spacing=4),
-                            height=42,
-                            alignment=ft.Alignment.TOP_LEFT,
-                        ),
-                    ], spacing=5, alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                    padding=8, border_radius=9, ink=True,
-                    bgcolor=tint(risk_color, .045),
-                    border=ft.Border.all(1, tint(risk_color, .28)),
-                    data=node.address,
-                    tooltip=tr(f"{node.address} · {node.role} · {node.risk_level} risk"),
-                    on_click=lambda e: self._select_host(e.control.data),
-                )
-                nodes.append(node_card)
-                self._topology_nodes.append(node_card)
-            columns = max(1, round(
-                (self._viewport_content_width - 40.0 + 8.0) /
-                (self._topology_card_width(self._viewport_content_width) + 8.0)
-            ))
-            node_grid = ft.GridView(
-                controls=nodes,
-                max_extent=210,
-                spacing=8,
-                run_spacing=8,
-                child_aspect_ratio=1.35,
-                height=max(156.0, ((len(nodes) + columns - 1) // columns) * 156.0),
-                build_controls_on_demand=False,
-            )
-            self._topology_grids.append((node_grid, len(nodes)))
-            controls.append(ft.Container(
-                content=ft.Column([
-                    ft.Row([
-                        ft.Icon(ft.Icons.ACCOUNT_TREE_ROUNDED, color=CYAN, size=17),
-                        ft.Text(segment.network, color=TEXT, size=11,
-                                weight=ft.FontWeight.W_700, font_family="monospace"),
-                        ft.Container(expand=True),
-                        ft.Text(tr(f"{len(nodes)} devices"), color=MUTED, size=9),
-                    ], spacing=7),
-                    ft.Container(height=2, bgcolor=tint(CYAN, .28), border_radius=2),
-                    node_grid,
-                ], spacing=7),
-                bgcolor=SURFACE, border=ft.Border.all(1, BORDER),
-                border_radius=10, padding=10,
-            ))
-        self.r_topology.current.controls = controls or [
-            ft.Text("No responding devices were found.", color=MUTED)
-        ]
+        self._interactive_topology = NetworkTopologyMap(
+            segments, hosts_by_address,
+            on_select=self._select_topology_host,
+            on_edit=self._edit_inventory,
+            on_explain=self._show_service_explanation,
+        ) if segments else None
+        self.r_topology.current.controls = (
+            [self._interactive_topology.control] if self._interactive_topology else
+            [ft.Text("No responding devices were found.", color=MUTED)]
+        )
+        if self._interactive_topology:
+            self._interactive_topology.resize(max(280.0, self._viewport_content_width - 28.0))
         translate_tree(self.r_topology.current, get_language())
 
     def _edit_inventory(self, address: str):
@@ -1975,6 +1957,11 @@ class NetworkView:
             return
         self._selected_host = address
         self._show_host_alerts_dialog(address)
+
+    def _select_topology_host(self, address: str):
+        """Select a map node without covering its inline detail panel."""
+        if address:
+            self._selected_host = address
 
     def _host_alert_controls(self, address: str):
         alert_controls = []
@@ -2287,6 +2274,7 @@ class LocalPortsView:
         self._filtered = []
         self._summary_cards = []
         self._toolbar = None
+        self._search_field = None
         self._results = None
         self._refresh_button = None
         self._refresh_spinner = None
@@ -2324,14 +2312,15 @@ class LocalPortsView:
             width=18, height=18, stroke_width=2, color=PURPLE,
             visible=False,
         )
+        self._search_field = ft.TextField(
+            ref=self.r_search, label="Port, process, service or address",
+            prefix_icon=ft.Icons.SEARCH_ROUNDED, width=360,
+            filled=True, fill_color=tint(CYAN, .025), border_color=BORDER,
+            focused_border_color=CYAN, border_radius=8,
+            on_change=lambda e: self._render(),
+        )
         self._toolbar = card(ft.Row([
-            ft.TextField(
-                ref=self.r_search, label="Port, process, service or address",
-                prefix_icon=ft.Icons.SEARCH_ROUNDED, width=330,
-                filled=True, fill_color=tint(CYAN, .025), border_color=BORDER,
-                focused_border_color=CYAN, border_radius=8,
-                on_change=lambda e: self._render(),
-            ),
+            self._search_field,
             ft.Dropdown(
                 ref=self.r_filter, label="Exposure filter", value="all", width=210,
                 options=[ft.DropdownOption(key, tr(label)) for key, label in (
@@ -2589,16 +2578,21 @@ class LocalPortsView:
         self.refresh(background=False)
 
     def set_viewport(self, width: float, height: float):
-        content_width = max(300.0, width - 28.0)
+        content_width = fit(max(300.0, width - 28.0))
         columns = 3 if content_width >= 760 else 1
-        key = (columns, round(content_width))
+        key = (columns, content_width)
         if key == self._layout_key or not self._summary_cards:
             return
         self._layout_key = key
-        metric_width = (content_width - 12 * (columns - 1)) / columns
-        for item in self._summary_cards:
-            item.width = metric_width
+        _apply_widths(self._summary_cards, split(content_width, columns, 12))
         self._toolbar.width = content_width
+        # 330 px could not hold the Spanish label ("Puerto, proceso, servicio o
+        # dirección"), which wrapped onto a second line and made the field
+        # taller than the controls beside it. The field now takes the room the
+        # filter and the refresh action leave free.
+        self._search_field.width = snap(
+            max(360.0, min(620.0, content_width - 430.0))
+        )
 
 
 # ── 4. LIVE PACKETS ────────────────────────────────────────────────────
@@ -2640,7 +2634,9 @@ class PacketsView:
         def dd(label, opts, cb, w=130):
             return ft.Dropdown(
                 label=label, value="All",
-                options=[ft.DropdownOption(x) for x in opts],
+                # The key stays English so filtering keeps working; the text is
+                # what ``translate_tree`` localises.
+                options=[ft.DropdownOption(x, x) for x in opts],
                 on_select=cb, width=w,
                 bgcolor=SURFACE, color=TEXT,
                 border_color=BORDER, focused_border_color=CYAN,
@@ -2661,9 +2657,10 @@ class PacketsView:
                 ft.DataColumn(ft.Text("Geo",      color=DIM, size=11, weight=ft.FontWeight.W_600)),
             ],
             rows=[],
+            # The surrounding card already draws the frame; a second border
+            # here produced a double outline on every desktop size.
             bgcolor=CARD,
-            border=ft.Border.all(1, BORDER),
-            border_radius=12,
+            border_radius=10,
             column_spacing=18,
             heading_row_color=SURFACE,
             heading_row_height=38,
@@ -2686,11 +2683,15 @@ class PacketsView:
             cursor_color=CYAN, text_size=12,
             prefix_icon=ft.Icons.SEARCH_ROUNDED,
         )
+        # A spacer keeps the two actions anchored to the trailing edge instead
+        # of leaving one long empty strip on wide desktops.
+        self._toolbar_spacer = ft.Container(expand=True)
         self._toolbar_row = ft.Row([
                     self._proto_filter,
                     self._direction_filter,
                     self._ip_filter,
                     ft.Text(ref=self.r_count, value="0 packets", size=12, color=MUTED),
+                    self._toolbar_spacer,
                     ft.Button(
                         ref=self.r_pause_btn,
                         content="⏸ Pause", on_click=on_pause,
@@ -2702,13 +2703,16 @@ class PacketsView:
             bgcolor=tint(PURPLE, .19), color=PURPLE,
                         style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
                     ),
-                ], spacing=10, wrap=True, run_spacing=10)
+                ], spacing=10, wrap=False, run_spacing=10)
         self._toolbar_card = card(
             self._toolbar_row,
             padding=ft.padding.Padding.symmetric(horizontal=14, vertical=10),
         )
-        self._table_container = ft.Container(
-            content=ft.Stack([
+        # The stream area is a card like every other list in the workspace.
+        # Without it the heading row floated alone over the page background and
+        # the rest of the viewport read as an unfinished hole.
+        self._table_container = card(
+            ft.Stack([
                 ft.Column(
                     [ft.Row([table], scroll=ft.ScrollMode.ALWAYS)],
                     scroll=ft.ScrollMode.ALWAYS, expand=True,
@@ -2727,7 +2731,8 @@ class PacketsView:
                     left=0, right=0, top=0, bottom=0,
                 ),
             ], expand=True),
-            expand=True, border_radius=12,
+            padding=ft.padding.Padding.only(left=6, top=6, right=6, bottom=6),
+            expand=True,
             clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
         )
 
@@ -2739,27 +2744,35 @@ class PacketsView:
         ], spacing=10, expand=True)
 
     def set_viewport(self, width: float, height: float):
-        content_width = max(280.0, width - 28.0)
-        content_height = max(360.0, height - 28.0)
+        content_width = fit(max(280.0, width - 28.0))
+        content_height = fit(max(360.0, height - 28.0))
         mode = "wide" if content_width >= 900 else "compact" if content_width >= 600 else "narrow"
         key = (mode, round(content_width), round(content_height))
         if key == self._layout_key or not self._toolbar_card:
             return
         self._layout_key = key
         self._toolbar_card.width = content_width
-        self._toolbar_row.width = max(250.0, content_width - 28.0)
+        self._toolbar_row.width = snap(max(250.0, content_width - 28.0))
         self._table_container.width = content_width
         if self.r_table.current:
-            self.r_table.current.width = max(820.0, content_width)
+            # Card border (1 px) plus its 6 px padding on both sides: the
+            # heading row has to reach the frame, not stop short of it.
+            self.r_table.current.width = snap(max(820.0, content_width - 14.0))
 
+        # A Wrap cannot host an expanding spacer, so the trailing alignment is
+        # only used while the toolbar fits on a single line.
+        self._toolbar_row.wrap = mode == "narrow"
+        self._toolbar_spacer.visible = mode != "narrow"
+        # Spanish labels ("Protocolo", "Dirección") need more room than the
+        # English source strings before the floating label wraps in two lines.
         if mode == "narrow":
-            self._proto_filter.width = 125
-            self._direction_filter.width = 105
-            self._ip_filter.width = min(220.0, content_width - 28.0)
+            self._proto_filter.width = 150
+            self._direction_filter.width = 140
+            self._ip_filter.width = snap(min(220.0, content_width - 28.0))
         else:
-            self._proto_filter.width = 140
-            self._direction_filter.width = 110
-            self._ip_filter.width = 220 if mode == "wide" else 180
+            self._proto_filter.width = 165
+            self._direction_filter.width = 150
+            self._ip_filter.width = 240 if mode == "wide" else 200
 
     def _export_csv(self):
         """Export visible packets to CSV and show save path."""
@@ -2849,7 +2862,7 @@ class PacketsView:
         except Exception:
             pass
         if self.r_count.current:
-            self.r_count.current.value = f"{len(rows):,} packets"
+            self.r_count.current.value = tr(f"{len(rows):,} packets")
 
 
 # ── 3. CHARTS ────────────────────────────────────────────────────────────
@@ -2881,6 +2894,8 @@ class ChartsView:
         self.r_history = ft.Ref[ft.Column]()
         self._cards = []
         self._grid = None
+        self._guidance_card = None
+        self._status_card = None
         self._running = False
         self._last_gateway = None
         self._layout_mode = None
@@ -2939,7 +2954,7 @@ class ChartsView:
             metric("PACKET LOSS", self.r_loss, AMBER),
             metric("DNS RESOLUTION", self.r_dns, GREEN),
         ], spacing=12, wrap=True, run_spacing=12)
-        status_card = card(ft.Column([
+        self._status_card = status_card = card(ft.Column([
             ft.Row([
                 ft.Icon(ft.Icons.VERIFIED_USER_OUTLINED, color=CYAN, size=22),
                 ft.Column([
@@ -2964,7 +2979,7 @@ class ChartsView:
                 ft.Text(ref=self.r_internet, value="Not checked", color=TEXT, size=10),
             ], spacing=8, wrap=True),
         ], spacing=7))
-        guidance = card(ft.Column([
+        self._guidance_card = guidance = card(ft.Column([
             section_title("HOW TO INTERPRET THIS CHECK"),
             ft.Text(
                 "Measurements are taken on demand and are not inferred from captured traffic. "
@@ -3030,18 +3045,20 @@ class ChartsView:
         ], spacing=12, scroll=ft.ScrollMode.AUTO, expand=True)
 
     def set_viewport(self, width: float, height: float):
-        content_width = max(280.0, width - 28.0)
+        content_width = fit(max(280.0, width - 28.0))
         mode = "wide" if content_width >= 900 else "compact" if content_width >= 560 else "narrow"
-        layout_key = (mode, round(content_width), round(height))
+        layout_key = (mode, content_width, round(height))
         if layout_key == self._layout_mode or not self._cards:
             return
         self._layout_mode = layout_key
         self._grid.width = content_width
         self._history_card.width = content_width
+        # The guidance card had no width of its own, so it stopped short of the
+        # cards above it and left a ragged edge down the right of the view.
+        self._guidance_card.width = content_width
+        self._status_card.width = content_width
         count = 4 if mode == "wide" else 2 if mode == "compact" else 1
-        card_width = (content_width - 12 * (count - 1)) / count
-        for control in self._cards:
-            control.width = card_width
+        _apply_widths(self._cards, split(content_width, count, 12))
 
     def refresh(self):
         # Quality checks are intentionally on demand; the global refresh loop
@@ -3064,20 +3081,20 @@ class ChartsView:
         self._last_gateway = result.target
         status, reason = classify_quality(result)
         color = GREEN if status == "STABLE" else AMBER if status == "REVIEW" else MUTED
-        self.r_status.current.value = status
+        self.r_status.current.value = tr(status)
         self.r_status.current.color = color
-        self.r_reason.current.value = reason or "No classification available."
+        self.r_reason.current.value = tr(reason or "No classification available.")
         self.r_gateway.current.value = result.target
         self.r_samples.current.value = f"{result.received}/{result.samples} replies"
         self.r_latency.current.value = (f"{result.latency_ms:.1f} ms"
-                                        if result.latency_ms is not None else "Unavailable")
+                                        if result.latency_ms is not None else tr("Unavailable"))
         self.r_jitter.current.value = (f"{result.jitter_ms:.1f} ms"
-                                       if result.jitter_ms is not None else "Unavailable")
+                                       if result.jitter_ms is not None else tr("Unavailable"))
         self.r_loss.current.value = (f"{result.loss_percent:.0f}%"
-                                     if result.loss_percent is not None else "Insufficient")
+                                     if result.loss_percent is not None else tr("Insufficient"))
         self.r_dns.current.value = (f"{result.dns_ms:.1f} ms"
-                                    if result.dns_ms is not None else "Unavailable")
-        self.r_internet.current.value = (
+                                    if result.dns_ms is not None else tr("Unavailable"))
+        self.r_internet.current.value = tr(
             "Reachable" if result.internet_reachable is True
             else "Not reachable" if result.internet_reachable is False
             else "Inconclusive"
@@ -3087,20 +3104,23 @@ class ChartsView:
         capacity = adapter_capacity(self.s.interface, self._last_gateway)
         if self.r_adapter.current:
             self.r_adapter.current.value = capacity["name"]
+            # This evidence is written after ``translate_tree`` has walked the
+            # view, so each value has to be localised as it is produced.
             self.r_capacity.current.value = (
-                f"{capacity['speed_mbps']:.0f} Mbps" if capacity["speed_mbps"] else "Unavailable"
+                f"{capacity['speed_mbps']:.0f} Mbps" if capacity["speed_mbps"]
+                else tr("Unavailable")
             )
             observed_mbps = (self.s.peak_kbps_in + self.s.peak_kbps_out) * 8 / 1024
             if capacity["speed_mbps"] and observed_mbps > 0:
                 used = min(100.0, observed_mbps / capacity["speed_mbps"] * 100)
-                self.r_headroom.current.value = f"{100 - used:.1f}% (capture peak)"
+                self.r_headroom.current.value = tr(f"{100 - used:.1f}% (capture peak)")
             else:
-                self.r_headroom.current.value = "Insufficient data"
+                self.r_headroom.current.value = tr("Insufficient data")
         rows = self.db.list_quality_checks(30) if self.db else []
         trend, detail = quality_trend(rows)
         if self.r_trend.current:
-            self.r_trend.current.value = trend
-            self.r_trend_detail.current.value = detail
+            self.r_trend.current.value = tr(trend)
+            self.r_trend_detail.current.value = tr(detail)
         if self.r_history.current:
             self.r_history.current.controls = [
                 ft.Container(
@@ -3109,17 +3129,17 @@ class ChartsView:
                                 color=TEXT, size=10, font_family="monospace", width=105),
                         ft.Text(row["gateway"], color=CYAN, size=10,
                                 font_family="monospace", width=120),
-                        ft.Text(f"Latencia  {row['latency_ms']:.1f} ms",
+                        ft.Text(f"{tr('Latency')}  {row['latency_ms']:.1f} ms",
                                 color=MUTED if row["latency_ms"] < 100 else AMBER,
                                 size=10, width=145),
                         ft.Text(f"Jitter  {row['jitter_ms']:.1f} ms",
                                 color=MUTED if row["jitter_ms"] < 30 else AMBER,
                                 size=10, width=130),
-                        ft.Text(f"Pérdida  {row['loss_percent']:.0f}%",
+                        ft.Text(f"{tr('Loss')}  {row['loss_percent']:.0f}%",
                                 color=MUTED if row["loss_percent"] < 5 else AMBER,
                                 size=10, width=115),
                         ft.Text(f"DNS  {row['dns_ms']:.1f} ms" if row["dns_ms"] is not None
-                                else "DNS  no disponible", color=PURPLE, size=10),
+                                else f"DNS  {tr('not available')}", color=PURPLE, size=10),
                     ], spacing=10, wrap=True, run_spacing=5),
                     bgcolor=tint(CYAN, .035),
                     border=ft.Border.all(1, tint(CYAN, .14)),
@@ -3142,13 +3162,51 @@ class HistoryView:
         self.r_info  = ft.Ref[ft.Text]()
         self.r_session_count = ft.Ref[ft.Text]()
         self.line_chart = LineChartCanvas(CYAN, GREEN, "Received", "Sent", 300, 210)
+        self._metric_values = {}
+        self._protocol_rows = None
+        self._insight_text = None
+        self._metrics_row = None
+        self._metric_cards = []
+        self._analysis_row = None
         self._header_card = None
         self._header_row = None
         self._chart_card = None
         self._table_card = None
         self._session_dropdown = None
         self._top_table = None
+        self._compare_dropdown = None
+        self._comparison_text = None
+        self._trend_text = None
+        self._apps_column = None
+        self._events_column = None
+        self._detail_row = None
+        self._selected_sid = None
         self._layout_key = None
+
+    @staticmethod
+    def _format_bytes(value: int) -> str:
+        value = int(value or 0)
+        if value >= 1024 ** 3:
+            return f"{value / 1024 ** 3:.2f} GB"
+        if value >= 1024 ** 2:
+            return f"{value / 1024 ** 2:.1f} MB"
+        if value >= 1024:
+            return f"{value / 1024:.1f} KB"
+        return f"{value} B"
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        seconds = max(0, int(seconds or 0))
+        hours, rest = divmod(seconds, 3600)
+        minutes, secs = divmod(rest, 60)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+    @staticmethod
+    def _parse_time(value):
+        try:
+            return datetime.fromisoformat(str(value)) if value else None
+        except (TypeError, ValueError):
+            return None
 
     def build(self):
         def on_session(e):
@@ -3156,15 +3214,20 @@ class HistoryView:
                 self._load(int(e.control.value))
         def on_refresh(e):
             self._reload_sessions()
+        def on_compare(e):
+            self._render_comparison(int(e.control.value)) if e.control.value else None
+        def on_export(e):
+            self._export_selected()
 
         top_table = ft.DataTable(
             ref=self.r_table,
             columns=[
                 ft.DataColumn(ft.Text("Remote IP",   color=DIM, size=11, weight=ft.FontWeight.W_600)),
-                ft.DataColumn(ft.Text("Bytes",        color=DIM, size=11, weight=ft.FontWeight.W_600), numeric=True),
+                ft.DataColumn(ft.Text("Traffic",      color=DIM, size=11, weight=ft.FontWeight.W_600), numeric=True),
+                ft.DataColumn(ft.Text("Share",        color=DIM, size=11, weight=ft.FontWeight.W_600), numeric=True),
                 ft.DataColumn(ft.Text("Packets",      color=DIM, size=11, weight=ft.FontWeight.W_600), numeric=True),
-                ft.DataColumn(ft.Text("Last Seen",    color=DIM, size=11, weight=ft.FontWeight.W_600)),
-                ft.DataColumn(ft.Text("Domain / Geo", color=DIM, size=11, weight=ft.FontWeight.W_600)),
+                ft.DataColumn(ft.Text("Last activity", color=DIM, size=11, weight=ft.FontWeight.W_600)),
+                ft.DataColumn(ft.Text("Identity / Geo", color=DIM, size=11, weight=ft.FontWeight.W_600)),
             ],
             rows=[], bgcolor=CARD, border=ft.Border.all(1, BORDER), border_radius=10,
             column_spacing=20, heading_row_color=SURFACE, heading_row_height=36,
@@ -3181,10 +3244,20 @@ class HistoryView:
             leading_icon=ft.Icons.HISTORY_ROUNDED,
             enable_search=True,
         )
+        self._compare_dropdown = ft.Dropdown(
+            label="Compare with", hint_text="Optional second session", options=[],
+            on_select=on_compare, width=330, filled=True,
+            fill_color=tint(PURPLE, .025), color=TEXT, border_color=BORDER,
+            focused_border_color=PURPLE, border_radius=9, text_size=11,
+            enable_search=True,
+        )
         self._header_row = ft.Row([
             self._session_dropdown,
+            self._compare_dropdown,
             ft.Button(content="RELOAD SESSIONS", icon=ft.Icons.REFRESH_ROUNDED,
                       on_click=on_refresh, color=CYAN, bgcolor=tint(CYAN, .09)),
+            ft.Button(content="EXPORT SESSION", icon=ft.Icons.DOWNLOAD_ROUNDED,
+                      on_click=on_export, color=GREEN, bgcolor=tint(GREEN, .09)),
         ], spacing=10, wrap=True, run_spacing=10)
         self._header_card = card(
             ft.Column([
@@ -3196,17 +3269,46 @@ class HistoryView:
                 ]),
                 self._header_row,
                 ft.Container(
-                    content=ft.Text(ref=self.r_info, value="Select a session to see its summary",
-                                    size=11, color=MUTED),
+                    content=ft.Row([
+                        ft.Icon(ft.Icons.INFO_OUTLINE_ROUNDED, color=CYAN, size=16),
+                        ft.Text(ref=self.r_info, value="Select a session to see its summary",
+                                size=11, color=DIM, expand=True),
+                    ], spacing=7),
                     bgcolor=tint(CYAN, .025), border_radius=7,
                     padding=ft.padding.Padding.symmetric(horizontal=10, vertical=7),
                 ),
             ], spacing=9),
             padding=12,
         )
+        metric_specs = (
+            ("volume", "TOTAL TRANSFERRED", ft.Icons.SWAP_VERT_ROUNDED, CYAN),
+            ("average", "AVERAGE THROUGHPUT", ft.Icons.TIMELAPSE_ROUNDED, GREEN),
+            ("peak", "PEAK SECOND", ft.Icons.BOLT_ROUNDED, AMBER),
+            ("direction", "TRAFFIC DIRECTION", ft.Icons.COMPARE_ARROWS_ROUNDED, PURPLE),
+            ("endpoints", "REMOTE ENDPOINTS", ft.Icons.PUBLIC_ROUNDED, BLUE),
+        )
+        self._metrics_row = ft.Row(spacing=10, wrap=True, run_spacing=10)
+        for key, label, icon, color in metric_specs:
+            value = ft.Text("—", color=color, size=17, weight=ft.FontWeight.W_700,
+                            overflow=ft.TextOverflow.ELLIPSIS)
+            detail = ft.Text("", color=MUTED, size=9,
+                             overflow=ft.TextOverflow.ELLIPSIS)
+            self._metric_values[key] = (value, detail)
+            item = card(ft.Row([
+                ft.Container(content=ft.Icon(icon, color=color, size=20),
+                             width=38, height=38, alignment=ft.Alignment.CENTER,
+                             bgcolor=tint(color, .10), border_radius=9),
+                ft.Column([
+                    ft.Text(label, color=DIM, size=8, weight=ft.FontWeight.W_700),
+                    value, detail,
+                ], spacing=0, expand=True),
+            ], spacing=8), padding=10)
+            self._metric_cards.append(item)
+        self._metrics_row.controls = self._metric_cards
+
         self._chart_card = card(ft.Column([
             ft.Row([
-                section_title("HISTORICAL TRAFFIC  ( KB/s per second )"),
+                section_title("SESSION TIMELINE  ( KB/s per second )"),
                 ft.Container(expand=True),
                 ft.Row([
                     ft.Container(width=9, height=9, bgcolor=CYAN, border_radius=3),
@@ -3217,8 +3319,67 @@ class HistoryView:
             ]),
             self.line_chart.widget,
         ], spacing=12))
+        self._protocol_rows = ft.Column([
+            ft.Text("Select a session to calculate protocol activity.", color=MUTED, size=10)
+        ], spacing=8)
+        self._protocol_card = card(ft.Column([
+            section_title("PROTOCOL ACTIVITY"),
+            ft.Text("Packet counts accumulated during this capture.", color=MUTED, size=9),
+            ft.Divider(color=BORDER, height=6),
+            self._protocol_rows,
+        ], spacing=7))
+        self._analysis_row = ft.Row([
+            self._chart_card, self._protocol_card,
+        ], spacing=10, wrap=True, run_spacing=10,
+           vertical_alignment=ft.CrossAxisAlignment.START)
+        self._insight_text = ft.Text(
+            "Select a session to generate a concise activity summary.",
+            color=DIM, size=10, expand=True,
+        )
+        self._insight_card = card(ft.Row([
+            ft.Container(content=ft.Icon(ft.Icons.LIGHTBULB_OUTLINE_ROUNDED,
+                                         color=AMBER, size=20),
+                         width=38, height=38, alignment=ft.Alignment.CENTER,
+                         bgcolor=tint(AMBER, .09), border_radius=9),
+            ft.Column([
+                ft.Text("SESSION HIGHLIGHTS", color=TEXT, size=10,
+                        weight=ft.FontWeight.W_700),
+                self._insight_text,
+            ], spacing=3, expand=True),
+        ], spacing=9), padding=10)
+        self._comparison_text = ft.Text(
+            "Choose a second session to compare volume, packets, duration and drops.",
+            color=DIM, size=10, selectable=True,
+        )
+        self._trend_text = ft.Text(
+            "Daily trends will appear when captures are available.",
+            color=DIM, size=10, selectable=True,
+        )
+        comparison_card = card(ft.Column([
+            section_title("SESSION COMPARISON"), self._comparison_text,
+            ft.Divider(color=BORDER, height=5),
+            section_title("LAST 30 DAYS"), self._trend_text,
+        ], spacing=7), padding=10)
+        self._apps_column = ft.Column([
+            ft.Text("No historical application data for this session.", color=MUTED, size=10)
+        ], spacing=6, scroll=ft.ScrollMode.AUTO, expand=True)
+        self._events_column = ft.Column([
+            ft.Text("No session events recorded.", color=MUTED, size=10)
+        ], spacing=6, scroll=ft.ScrollMode.AUTO, expand=True)
+        # Never put Expanded children inside a wrapping Row. Flutter implements
+        # Row(wrap=True) as a Wrap, where Expanded is invalid and Flet renders
+        # the affected region as a large grey error surface.
+        apps_card = card(ft.Column([
+            section_title("APPLICATIONS AND PROCESSES"), self._apps_column,
+        ], spacing=8, expand=True), padding=10)
+        events_card = card(ft.Column([
+            section_title("ALERTS, DROPS AND EVENTS"), self._events_column,
+        ], spacing=8, expand=True), padding=10)
+        self._detail_row = ft.Row([apps_card, events_card], spacing=10, wrap=True,
+                                  run_spacing=10,
+                                  vertical_alignment=ft.CrossAxisAlignment.START)
         self._table_card = card(ft.Column([
-            section_title("TOP CONNECTIONS  ( this session )"),
+            section_title("REMOTE ENDPOINTS  ( ranked by traffic )"),
             ft.Divider(color=BORDER, height=6),
             ft.Column([ft.Row([top_table], scroll=ft.ScrollMode.ALWAYS)],
                       scroll=ft.ScrollMode.ALWAYS, expand=True),
@@ -3228,31 +3389,60 @@ class HistoryView:
             view_heading("Session history", "Compare stored captures and review their top endpoints",
                          ft.Icons.HISTORY_ROUNDED, AMBER),
             self._header_card,
-            self._chart_card,
+            self._metrics_row,
+            self._analysis_row,
+            self._insight_card,
+            comparison_card,
+            self._detail_row,
             self._table_card,
         ], spacing=12, scroll=ft.ScrollMode.AUTO, expand=True)
 
     def set_viewport(self, width: float, height: float):
-        content_width = max(280.0, width - 28.0)
-        content_height = max(420.0, height - 28.0)
+        content_width = fit(max(280.0, width - 28.0))
+        content_height = fit(max(420.0, height - 28.0))
         mode = "wide" if content_width >= 900 else "compact" if content_width >= 580 else "narrow"
-        key = (mode, round(content_width), round(content_height))
+        key = (mode, content_width, content_height)
         if key == self._layout_key or not self._header_card:
             return
         self._layout_key = key
-        for control in (self._header_card, self._chart_card, self._table_card):
+        for control in (self._header_card, self._insight_card, self._table_card):
             control.width = content_width
-        self._header_row.width = max(240.0, content_width - 28.0)
-        self._session_dropdown.width = (
-            min(460.0, content_width * 0.48)
+        self._header_row.width = fit(max(240.0, content_width - 28.0))
+        # The picker used to stop at 460 px. Maximized, that left roughly a
+        # thousand pixels of empty card to the right of the reload action while
+        # the session captions ("#79 · 2026-08-26T08:00:56 · All · 0 packets")
+        # were the longest strings in the view. It now takes the row it shares
+        # with that button, which needs ~260 px for its Spanish caption.
+        self._session_dropdown.width = fit(
+            max(320.0, content_width * .42)
             if mode != "narrow"
             else max(220.0, content_width - 84.0)
         )
+        self._compare_dropdown.width = fit(
+            max(260.0, content_width * .28) if mode != "narrow"
+            else max(220.0, content_width - 84.0)
+        )
+        metric_columns = 5 if content_width >= 1120 else 3 if content_width >= 720 else 2
+        metric_widths = split(content_width, metric_columns, 10)
+        _apply_widths(self._metric_cards, metric_widths)
         chart_height = 190 if content_height >= 720 else 165 if content_height >= 560 else 145
-        self.line_chart.resize(content_width - 28.0, chart_height)
-        self._table_card.height = max(220.0, content_height - chart_height - 150.0)
+        if mode == "wide":
+            chart_width = snap(content_width * .67 - 5)
+            protocol_width = snap(content_width - chart_width - 10)
+        else:
+            chart_width = protocol_width = content_width
+        self._chart_card.width = chart_width
+        self._protocol_card.width = protocol_width
+        self._analysis_row.width = content_width
+        self._detail_row.width = content_width
+        detail_widths = split(content_width, 2, 10) if mode == "wide" else [content_width]
+        for index, item in enumerate(self._detail_row.controls):
+            item.width = detail_widths[index] if mode == "wide" else content_width
+            item.height = 250
+        self.line_chart.resize(chart_width - 28.0, chart_height)
+        self._table_card.height = snap(max(250.0, content_height * .42))
         if self._top_table:
-            self._top_table.width = max(700.0, content_width - 36.0)
+            self._top_table.width = snap(max(880.0, content_width - 36.0))
 
     def on_mount(self):
         self._reload_sessions()
@@ -3265,9 +3455,15 @@ class HistoryView:
             ft.DropdownOption(
                 key=str(s["id"]),
                 text=(f"#{s['id']}  ·  {str(s['start_time'])[:19]}"
-                      f"  ·  {s['interface']}  ·  {s.get('total_pkts',0):,} packets"),
+                      f"  ·  {s['interface']}  ·  "
+                      f"{tr('Completed') if s.get('end_time') else tr('Active')}"),
             )
             for s in sessions
+        ]
+        selected_value = self.r_dd.current.value
+        self._compare_dropdown.options = [
+            ft.DropdownOption(str(s["id"]), f"#{s['id']} · {str(s['start_time'])[:19]}")
+            for s in sessions if str(s["id"]) != selected_value
         ]
         if self.r_session_count.current:
             self.r_session_count.current.value = tr(f"{len(sessions)} sessions")
@@ -3286,45 +3482,275 @@ class HistoryView:
             pass
 
     def _load(self, sid: int):
+        self._selected_sid = sid
         stats = self.db.get_stats(sid)
-        if stats:
-            da = [r["bytes_in"]  / 1024 for r in stats]
-            db2 = [r["bytes_out"] / 1024 for r in stats]
-            self.line_chart._n = len(da)
-            self.line_chart.update_data(da, db2)
+        inbound_series = [r["bytes_in"] / 1024 for r in stats]
+        outbound_series = [r["bytes_out"] / 1024 for r in stats]
+        self.line_chart._n = max(1, len(stats))
+        self.line_chart.update_data(inbound_series, outbound_series)
 
-        tops = self.db.get_top_ips(sid, 15)
+        tops = self.db.get_top_ips(sid, 100)
+        all_sessions = self.db.list_sessions()
+        session = next((item for item in all_sessions if item["id"] == sid), None)
+        if not session:
+            return
+
+        start = self._parse_time(session.get("start_time"))
+        end = self._parse_time(session.get("end_time"))
+        if end is None and stats:
+            end = self._parse_time(stats[-1].get("ts"))
+        duration = max(0.0, (end - start).total_seconds()) if start and end else 0.0
+        inbound = max(int(session.get("total_bytes_in") or 0),
+                      sum(int(row.get("bytes_in") or 0) for row in stats))
+        outbound = max(int(session.get("total_bytes_out") or 0),
+                       sum(int(row.get("bytes_out") or 0) for row in stats))
+        total_bytes = inbound + outbound
+        packet_total = max(int(session.get("total_pkts") or 0),
+                           sum(int(row.get("pkts_in") or 0) + int(row.get("pkts_out") or 0)
+                               for row in stats))
+        average_kbps = total_bytes / 1024 / duration if duration else 0.0
+        peak_row = max(stats, key=lambda row: int(row.get("bytes_in") or 0)
+                       + int(row.get("bytes_out") or 0), default=None)
+        peak_kbps = ((int(peak_row.get("bytes_in") or 0)
+                      + int(peak_row.get("bytes_out") or 0)) / 1024
+                     if peak_row else 0.0)
+        inbound_share = inbound / total_bytes * 100 if total_bytes else 0.0
+        outbound_share = 100.0 - inbound_share if total_bytes else 0.0
+
+        protocols = {
+            "TCP": sum(int(row.get("n_tcp") or 0) for row in stats),
+            "UDP": sum(int(row.get("n_udp") or 0) for row in stats),
+            "HTTPS": sum(int(row.get("n_https") or 0) for row in stats),
+            "HTTP": sum(int(row.get("n_http") or 0) for row in stats),
+            "DNS": sum(int(row.get("n_dns") or 0) for row in stats),
+            "ICMP": sum(int(row.get("n_icmp") or 0) for row in stats),
+            "OTHER": sum(int(row.get("n_other") or 0) for row in stats),
+        }
+        protocol_total = sum(protocols.values())
+        protocol_rank = sorted(protocols.items(), key=lambda item: item[1], reverse=True)
+        dominant_protocol, dominant_count = protocol_rank[0] if protocol_rank else ("—", 0)
+
+        def metric(key, value, detail):
+            value_control, detail_control = self._metric_values[key]
+            value_control.value = value
+            detail_control.value = detail
+            try:
+                value_control.update()
+                detail_control.update()
+            except RuntimeError:
+                pass
+
+        metric("volume", self._format_bytes(total_bytes),
+               f"↓ {self._format_bytes(inbound)} · ↑ {self._format_bytes(outbound)}")
+        metric("average", f"{average_kbps:.1f} KB/s",
+               f"{self._format_duration(duration)} {tr('duration').lower()}")
+        metric("peak", f"{peak_kbps:.1f} KB/s",
+               str(peak_row.get("ts") or "")[:19] if peak_row else tr("No samples"))
+        metric("direction", f"{inbound_share:.0f}% ↓  {outbound_share:.0f}% ↑",
+               tr("Received versus sent"))
+        metric("endpoints", f"{len(tops):,}",
+               f"{packet_total:,} {tr('packets')}")
+
+        if self._protocol_rows is not None:
+            protocol_controls = []
+            for name, count in protocol_rank:
+                if count <= 0:
+                    continue
+                share = count / protocol_total if protocol_total else 0.0
+                color = proto_color(name)
+                protocol_controls.append(ft.Column([
+                    ft.Row([
+                        ft.Text(name, color=color, size=9,
+                                weight=ft.FontWeight.W_700, width=54),
+                        ft.Text(f"{count:,}", color=TEXT, size=9,
+                                font_family="monospace", width=72),
+                        ft.Text(f"{share * 100:.0f}%", color=DIM, size=9,
+                                text_align=ft.TextAlign.RIGHT, expand=True),
+                    ], spacing=6),
+                    ft.ProgressBar(value=share, color=color,
+                                   bgcolor=tint(color, .10), height=5),
+                ], spacing=3))
+            self._protocol_rows.controls = protocol_controls or [
+                ft.Text("No protocol samples were stored for this session.",
+                        color=MUTED, size=10)
+            ]
+            try:
+                self._protocol_rows.update()
+            except RuntimeError:
+                pass
+
         if self.r_table.current:
+            endpoint_bytes = sum(int(item.get("total_bytes") or 0) for item in tops)
             self.r_table.current.rows = [
                 ft.DataRow(cells=[
                     ft.DataCell(ft.Text(t["ip"],   size=11, color=TEXT,  font_family="monospace")),
-                    ft.DataCell(ft.Text(f"{t['total_bytes']:,}", size=11, color=CYAN,  font_family="monospace")),
+                    ft.DataCell(ft.Text(self._format_bytes(t["total_bytes"]), size=11,
+                                        color=CYAN, font_family="monospace")),
+                    ft.DataCell(ft.Text(
+                        f"{(int(t['total_bytes'] or 0) / endpoint_bytes * 100):.1f}%"
+                        if endpoint_bytes else "0%", size=10, color=GREEN,
+                        font_family="monospace")),
                     ft.DataCell(ft.Text(f"{t['total_pkts']:,}",  size=11, color=DIM,   font_family="monospace")),
                     ft.DataCell(ft.Text(str(t["last_seen"] or "")[:19], size=10, color=MUTED)),
                     ft.DataCell(ft.Text(geo_cache.get_label(t["ip"]) or "…",
                                         size=10, color=PURPLE,
                                         overflow=ft.TextOverflow.ELLIPSIS)),
                 ])
-                for t in tops
+                for t in tops[:15]
             ]
             try:
                 self.r_table.current.update()
             except RuntimeError:
                 pass
 
-        sessions = self.db.list_sessions()
-        s = next((x for x in sessions if x["id"] == sid), None)
-        if s and self.r_info.current:
-            status = tr("Active") if not s.get("end_time") else tr("Completed")
+        if self.r_info.current:
+            status = tr("Active") if not session.get("end_time") else tr("Completed")
+            time_range = str(session.get("start_time") or "")[:19]
+            if session.get("end_time"):
+                time_range += f"  →  {str(session['end_time'])[:19]}"
             self.r_info.current.value = (
-                f"{status}  ·  {s.get('total_pkts',0):,} pkts  ·  "
-                f"↓ {s.get('total_bytes_in',0)/1_048_576:.1f} MB  ·  "
-                f"↑ {s.get('total_bytes_out',0)/1_048_576:.1f} MB"
+                f"#{sid}  ·  {status}  ·  {session.get('interface') or 'All'}  ·  "
+                f"{time_range}  ·  {self._format_duration(duration)}"
             )
             try:
                 self.r_info.current.update()
             except RuntimeError:
                 pass
+
+        if self._insight_text is not None:
+            top_endpoint = tops[0]["ip"] if tops else tr("none recorded")
+            peak_time = str(peak_row.get("ts") or "")[:19] if peak_row else tr("no peak sample")
+            self._insight_text.value = (
+                f"{tr('Busiest endpoint')}: {top_endpoint}  ·  "
+                f"{tr('Dominant protocol')}: {dominant_protocol} "
+                f"({dominant_count:,} {tr('packets')})  ·  "
+                f"{tr('Peak throughput')}: {peak_kbps:.1f} KB/s  ·  {peak_time}"
+            )
+            try:
+                self._insight_text.update()
+            except RuntimeError:
+                pass
+        self._render_history_details(sid)
+        self._render_trends()
+        if self._compare_dropdown is not None:
+            self._compare_dropdown.options = [
+                ft.DropdownOption(str(item["id"]),
+                                  f"#{item['id']} · {str(item['start_time'])[:19]}")
+                for item in self.db.list_sessions() if int(item["id"]) != int(sid)
+            ]
+            if str(self._compare_dropdown.value or "") == str(sid):
+                self._compare_dropdown.value = None
+
+    def _render_history_details(self, sid: int):
+        applications = self.db.get_session_applications(sid, 50)
+        events = self.db.list_session_events(sid, 100)
+        if self._apps_column is not None:
+            self._apps_column.controls = [
+                ft.Container(content=ft.Row([
+                    ft.Icon(ft.Icons.APPS_ROUNDED, color=CYAN, size=16),
+                    ft.Column([
+                        ft.Text(f"{app.get('process_name') or 'Unknown'}"
+                                f"  ·  PID {app.get('pid') or '—'}",
+                                color=TEXT, size=10, weight=ft.FontWeight.W_600),
+                        ft.Text(
+                            f"↓ {self._format_bytes(app.get('bytes_in', 0))}  ·  "
+                            f"↑ {self._format_bytes(app.get('bytes_out', 0))}  ·  "
+                            f"peak {float(app.get('peak_kbps') or 0):.1f} KB/s",
+                            color=MUTED, size=9,
+                        ),
+                    ], spacing=2, expand=True),
+                ], spacing=7), bgcolor=tint(CYAN, .035), border_radius=7, padding=7)
+                for app in applications
+            ] or [ft.Text("No historical application data for this session.",
+                          color=MUTED, size=10)]
+            self._safe_history_update(self._apps_column)
+        if self._events_column is not None:
+            self._events_column.controls = [
+                ft.Container(content=ft.Column([
+                    ft.Row([
+                        ft.Text(str(event.get("title") or "Event"), color=TEXT, size=10,
+                                weight=ft.FontWeight.W_600, expand=True),
+                        ft.Text(str(event.get("ts") or "")[:19], color=MUTED, size=8),
+                    ]),
+                    ft.Text(str(event.get("detail") or event.get("event_type") or ""),
+                            color=DIM, size=9),
+                ], spacing=2), bgcolor=tint(
+                    AMBER if event.get("severity") == "warning" else CYAN, .04
+                ), border_radius=7, padding=7)
+                for event in events
+            ] or [ft.Text("No session events recorded.", color=MUTED, size=10)]
+            self._safe_history_update(self._events_column)
+
+    def _render_comparison(self, other_sid: int):
+        if not self._selected_sid or self._comparison_text is None:
+            return
+        sessions = {int(item["id"]): item for item in self.db.list_sessions()}
+        current, other = sessions.get(int(self._selected_sid)), sessions.get(int(other_sid))
+        if not current or not other:
+            return
+        def totals(item):
+            return (int(item.get("total_bytes_in") or 0) + int(item.get("total_bytes_out") or 0),
+                    int(item.get("total_pkts") or 0), int(item.get("dropped_packets") or 0),
+                    max(0, int(((self._parse_time(item.get("end_time")) or
+                                self._parse_time(item.get("start_time"))) -
+                               self._parse_time(item.get("start_time"))).total_seconds()))
+                    if self._parse_time(item.get("start_time")) else 0)
+        now_values, old_values = totals(current), totals(other)
+        def delta(left, right):
+            return f"{left - right:+,}"
+        self._comparison_text.value = (
+            f"Session #{self._selected_sid} versus #{other_sid}  ·  "
+            f"traffic {delta(now_values[0], old_values[0])} B  ·  "
+            f"packets {delta(now_values[1], old_values[1])}  ·  "
+            f"drops {delta(now_values[2], old_values[2])}  ·  "
+            f"duration {delta(now_values[3], old_values[3])} s"
+        )
+        self._safe_history_update(self._comparison_text)
+
+    def _render_trends(self):
+        if self._trend_text is None:
+            return
+        trends = self.db.session_trends(30)
+        weekly = self.db.session_trends(84, "week")
+        if not trends:
+            self._trend_text.value = "No captures in the last 30 days."
+        else:
+            total_sessions = sum(int(row.get("sessions") or 0) for row in trends)
+            total_bytes = sum(int(row.get("bytes_in") or 0) + int(row.get("bytes_out") or 0)
+                              for row in trends)
+            busiest = max(trends, key=lambda row: int(row.get("bytes_in") or 0)
+                          + int(row.get("bytes_out") or 0))
+            self._trend_text.value = (
+                f"{len(trends)} active days  ·  {total_sessions} sessions  ·  "
+                f"{self._format_bytes(total_bytes)} total  ·  "
+                f"busiest day {busiest['period']} ({self._format_bytes(int(busiest.get('bytes_in') or 0) + int(busiest.get('bytes_out') or 0))})"
+            )
+            if weekly:
+                busiest_week = max(weekly, key=lambda row: int(row.get("bytes_in") or 0)
+                                   + int(row.get("bytes_out") or 0))
+                self._trend_text.value += (
+                    f"  ·  busiest week {busiest_week['period']} "
+                    f"({self._format_bytes(int(busiest_week.get('bytes_in') or 0) + int(busiest_week.get('bytes_out') or 0))})"
+                )
+        self._safe_history_update(self._trend_text)
+
+    def _export_selected(self):
+        if not self._selected_sid:
+            return None
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        target = PROJECT_ROOT / "exports" / f"netpulse_session_{self._selected_sid}_{stamp}.json"
+        result = self.db.export_session(self._selected_sid, target)
+        if self.r_info.current:
+            self.r_info.current.value = f"Session exported: {result}"
+            self._safe_history_update(self.r_info.current)
+        return result
+
+    @staticmethod
+    def _safe_history_update(control):
+        try:
+            control.update()
+        except (AssertionError, RuntimeError):
+            pass
 
 
 # ── 5. SETTINGS ────────────────────────────────────────────────────────────
@@ -3358,6 +3784,8 @@ class SettingsView:
         self._settings_body = None
         self._settings_columns = []
         self._interface_dropdown = None
+        self._language_dropdown = None
+        self._retention_dropdown = None
         self._bw_field = None
         self._pps_field = None
         self._alert_fields_row = None
@@ -3472,7 +3900,7 @@ class SettingsView:
             ], spacing=10))
 
         self._interface_dropdown = ft.Dropdown(
-            label="Interface", value=self.state.interface or "All",
+            label="Network Interface", value=self.state.interface or "All",
             options=opts, on_select=on_iface, width=420,
             bgcolor=SURFACE, color=TEXT,
             border_color=BORDER, focused_border_color=CYAN, text_size=12,
@@ -3490,7 +3918,6 @@ class SettingsView:
                 section_title("CAPTURE SETTINGS", icon=ft.Icons.TUNE_ROUNDED, color=CYAN),
                 ft.Divider(color=BORDER, height=8),
                 self._language_dropdown,
-                ft.Text("Network Interface", size=12, color=DIM, weight=ft.FontWeight.W_500),
                 self._interface_dropdown,
                 ft.Text("Changes take effect on the next capture start.",
                         size=11, color=MUTED, italic=True),
@@ -3627,11 +4054,15 @@ class SettingsView:
                 check_row("Internet access for IP Geo-lookup (ip-api.com)", CYAN),
             ], spacing=10))
 
+        # Three cards on the left against two on the right left the right column
+        # ending some 270 px higher than the left one, so the bottom of the page
+        # was half empty. Requirements is the shortest card, and moving it over
+        # brings the two columns within ~140 px of each other.
         left_column = ft.Column(
-            [capture_card, requirements_card, database_card], spacing=12,
+            [capture_card, database_card], spacing=12,
         )
         right_column = ft.Column(
-            [alerts_card, appearance_card], spacing=12,
+            [alerts_card, appearance_card, requirements_card], spacing=12,
         )
         self._settings_columns = [left_column, right_column]
         self._settings_body = ft.Row(
@@ -3655,10 +4086,10 @@ class SettingsView:
         ], spacing=12, scroll=ft.ScrollMode.AUTO, expand=True)
 
     def set_viewport(self, width: float, height: float):
-        content_width = max(280.0, width - 28.0)
-        content_height = max(420.0, height - 28.0)
+        content_width = fit(max(280.0, width - 28.0))
+        content_height = fit(max(420.0, height - 28.0))
         mode = "wide" if content_width >= 600 else "compact" if content_width >= 420 else "narrow"
-        key = (mode, round(content_width), round(content_height))
+        key = (mode, content_width, content_height)
         if key == self._layout_key or not self._cards:
             return
         self._layout_key = key
@@ -3666,16 +4097,17 @@ class SettingsView:
         self._settings_body.width = content_width
 
         if mode == "wide":
-            column_widths = (content_width * 0.44 - 6, content_width * 0.56 - 6)
-        elif mode == "compact":
-            column_widths = (content_width, content_width)
+            # 44/56 gives the alert and appearance forms the wider side; the
+            # pair still has to end flush with the intro card above it.
+            left = snap(content_width * 0.44 - 6)
+            column_widths = (left, content_width - 12 - left)
         else:
             column_widths = (content_width, content_width)
 
         self._settings_columns[0].width, self._settings_columns[1].width = column_widths
-        for control in (self._cards[1], self._cards[4], self._cards[5]):
+        for control in (self._cards[1], self._cards[4]):
             control.width = column_widths[0]
-        for control in (self._cards[2], self._cards[3]):
+        for control in (self._cards[2], self._cards[3], self._cards[5]):
             control.width = column_widths[1]
 
         for control in self._cards[1:]:
@@ -3683,14 +4115,27 @@ class SettingsView:
             control.expand = False
         for column in self._settings_columns:
             column.height = None
-        capture_inner = max(220.0, column_widths[0] - 28.0)
-        self._interface_dropdown.width = min(500.0, capture_inner)
-        alert_inner = max(220.0, column_widths[1] - 28.0)
+        capture_inner = fit(max(220.0, column_widths[0] - 28.0))
+        # Language and interface sat at 240 px and 500 px inside the same card,
+        # which read as two unrelated forms. They share one measure now.
+        #
+        # That measure used to be capped at 420 px. On a maximized window the
+        # capture column is ~770 px wide, so the cap left a 320 px hole to the
+        # right of every field while the alert and appearance cards opposite
+        # them filled their own row edge to edge — the two columns read as
+        # different designs. The fields now take the card they live in.
+        field_measure = capture_inner
+        self._interface_dropdown.width = field_measure
+        self._language_dropdown.width = field_measure
+        self._retention_dropdown.width = field_measure
+        alert_inner = fit(max(220.0, column_widths[1] - 28.0))
         self._alert_fields_row.width = alert_inner
-        if mode == "wide":
-            field_width = max(160.0, (alert_inner - 10.0) / 2)
-        else:
-            field_width = alert_inner
+        # Two pixels of slack keep the pair on one line: an exact half plus the
+        # 10 px gap rounds above the row width and the fields wrapped. Below
+        # ~330 px the threshold captions themselves wrap over the field border,
+        # so the pair stacks and each field takes the full column instead.
+        half = float(int(max(160.0, (alert_inner - 12.0) / 2)))
+        field_width = half if mode == "wide" and half >= 330.0 else alert_inner
         self._bw_field.width = field_width
         self._pps_field.width = field_width
 
@@ -3782,7 +4227,7 @@ class _LegacyProcessView:
         ], spacing=12, expand=True)
 
     def set_viewport(self, width: float, height: float):
-        content_width = max(280.0, width - 28.0)
+        content_width = fit(max(280.0, width - 28.0))
         mode = "wide" if content_width >= 900 else "compact" if content_width >= 600 else "narrow"
         key = (mode, round(content_width), round(height))
         if key == self._layout_key or not self._root:

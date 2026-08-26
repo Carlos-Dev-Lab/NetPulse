@@ -6,7 +6,13 @@ Uses WAL mode for concurrent reads/writes.
 import sqlite3
 import json
 import ipaddress
-from contextlib import contextmanager
+import csv
+import hashlib
+import os
+import shutil
+import tempfile
+import zipfile
+from contextlib import closing, contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Any
@@ -21,7 +27,7 @@ from netpulse.domain.network_scan import (
 # Bumped whenever a one-time data migration is added below. It is stored in
 # SQLite's own ``user_version`` pragma so the costly backfills run once instead
 # of on every launch.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # ── Schema ────────────────────────────────────────────────────────────────────
 _SCHEMA = """
@@ -34,7 +40,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     interface       TEXT    NOT NULL DEFAULT 'All',
     total_pkts      INTEGER DEFAULT 0,
     total_bytes_in  INTEGER DEFAULT 0,
-    total_bytes_out INTEGER DEFAULT 0
+    total_bytes_out INTEGER DEFAULT 0,
+    dropped_packets INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS stats (
@@ -62,6 +69,41 @@ CREATE TABLE IF NOT EXISTS top_ips (
     last_seen   TEXT,
     PRIMARY KEY (session_id, ip)
 );
+
+CREATE TABLE IF NOT EXISTS session_applications (
+    session_id   INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    app_key      TEXT NOT NULL,
+    pid          INTEGER,
+    process_name TEXT NOT NULL,
+    bytes_in     INTEGER DEFAULT 0,
+    bytes_out    INTEGER DEFAULT 0,
+    packets_in   INTEGER DEFAULT 0,
+    packets_out  INTEGER DEFAULT 0,
+    peak_kbps    REAL DEFAULT 0,
+    average_kbps REAL DEFAULT 0,
+    first_seen   TEXT,
+    last_seen    TEXT,
+    protocols    TEXT DEFAULT '{}',
+    destinations TEXT DEFAULT '[]',
+    PRIMARY KEY (session_id, app_key)
+);
+
+CREATE TABLE IF NOT EXISTS session_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    ts          TEXT NOT NULL,
+    event_type  TEXT NOT NULL,
+    severity    TEXT NOT NULL DEFAULT 'info',
+    title       TEXT NOT NULL,
+    detail      TEXT,
+    fingerprint TEXT NOT NULL,
+    UNIQUE(session_id, fingerprint)
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_apps_bytes
+ON session_applications(session_id, bytes_in DESC, bytes_out DESC);
+CREATE INDEX IF NOT EXISTS idx_session_events
+ON session_events(session_id, ts);
 
 CREATE INDEX IF NOT EXISTS idx_stats_session ON stats(session_id, ts);
 
@@ -273,6 +315,7 @@ class DB:
         with self._cx() as c:
             c.executescript(_SCHEMA)
             self._migrate_asset_schema(c)
+            self._migrate_session_schema(c)
             version = c.execute("PRAGMA user_version").fetchone()[0]
             if version >= SCHEMA_VERSION:
                 return
@@ -301,6 +344,10 @@ class DB:
             self._seed_asset_observations(c)
             c.execute("DROP TABLE IF EXISTS device_inventory")
             c.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+
+    def _migrate_session_schema(self, c) -> None:
+        """Add v2 capture-history fields to databases created by NetPulse 1.x."""
+        self._add_column(c, "sessions", "dropped_packets INTEGER DEFAULT 0")
 
     @staticmethod
     def _add_column(c, table: str, definition: str) -> bool:
@@ -632,19 +679,22 @@ class DB:
                 (datetime.now().isoformat(), iface or "All"),
             ).lastrowid
 
-    def close_session(self, sid: int, pkts: int, b_in: int, b_out: int):
+    def close_session(self, sid: int, pkts: int, b_in: int, b_out: int,
+                      dropped_packets: int = 0):
         with self._cx() as c:
             c.execute(
                 """UPDATE sessions
-                   SET end_time=?, total_pkts=?, total_bytes_in=?, total_bytes_out=?
+                   SET end_time=?, total_pkts=?, total_bytes_in=?, total_bytes_out=?,
+                       dropped_packets=?
                    WHERE id=?""",
-                (datetime.now().isoformat(), pkts, b_in, b_out, sid),
+                (datetime.now().isoformat(), pkts, b_in, b_out,
+                 max(0, int(dropped_packets or 0)), sid),
             )
 
     def list_sessions(self) -> List[Dict[str, Any]]:
         with self._cx() as c:
             rows = c.execute(
-                "SELECT * FROM sessions ORDER BY start_time DESC LIMIT 100"
+                "SELECT * FROM sessions ORDER BY start_time DESC, id DESC LIMIT 100"
             ).fetchall()
             return [dict(r) for r in rows]
 
@@ -668,6 +718,8 @@ class DB:
             placeholders = ",".join("?" * len(stale))
             c.execute(f"DELETE FROM stats WHERE session_id IN ({placeholders})", stale)
             c.execute(f"DELETE FROM top_ips WHERE session_id IN ({placeholders})", stale)
+            c.execute(f"DELETE FROM session_applications WHERE session_id IN ({placeholders})", stale)
+            c.execute(f"DELETE FROM session_events WHERE session_id IN ({placeholders})", stale)
             c.execute(f"DELETE FROM sessions WHERE id IN ({placeholders})", stale)
             return len(stale)
 
@@ -678,7 +730,193 @@ class DB:
             sessions = c.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()["n"]
             samples = c.execute("SELECT COUNT(*) AS n FROM stats").fetchone()["n"]
             scans = c.execute("SELECT COUNT(*) AS n FROM network_scans").fetchone()["n"]
-        return {"bytes": size, "sessions": sessions, "samples": samples, "scans": scans}
+            assets = c.execute("SELECT COUNT(*) AS n FROM inventory_devices").fetchone()["n"]
+            quality = c.execute("SELECT COUNT(*) AS n FROM quality_checks").fetchone()["n"]
+            profiles = c.execute("SELECT COUNT(*) AS n FROM scan_profiles").fetchone()["n"]
+            schedules = c.execute("SELECT COUNT(*) AS n FROM scan_schedules").fetchone()["n"]
+            events = c.execute("SELECT COUNT(*) AS n FROM session_events").fetchone()["n"]
+        return {
+            "bytes": size, "sessions": sessions, "samples": samples,
+            "scans": scans, "assets": assets, "quality": quality,
+            "profiles": profiles, "schedules": schedules, "events": events,
+        }
+
+    def backup(self, destination: str | Path) -> Path:
+        """Create a consistent online SQLite backup, including pending WAL data."""
+        target = Path(destination)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.resolve() == self.path.resolve():
+            raise ValueError("Backup destination must differ from the live database")
+        with closing(sqlite3.connect(str(self.path), timeout=15.0)) as source:
+            with closing(sqlite3.connect(str(target), timeout=15.0)) as output:
+                source.backup(output)
+        return target
+
+    @staticmethod
+    def _validate_database(path: Path) -> None:
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        with closing(sqlite3.connect(
+            f"file:{path.resolve().as_posix()}?mode=ro", uri=True
+        )) as c:
+            integrity = c.execute("PRAGMA integrity_check").fetchone()[0]
+            tables = {row[0] for row in c.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )}
+        if integrity != "ok" or not {"sessions", "stats", "network_scans"} <= tables:
+            raise ValueError("The selected file is not a valid NetPulse database")
+
+    def restore(self, source: str | Path, safety_directory: str | Path | None = None) -> Path:
+        """Atomically restore a validated backup and return the safety-backup path."""
+        incoming = Path(source)
+        self._validate_database(incoming)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        safety_root = Path(safety_directory or self.path.parent / "backups")
+        safety = self.backup(safety_root / f"before_restore_{stamp}.db")
+        fd, temporary_name = tempfile.mkstemp(prefix="netpulse_restore_", suffix=".db",
+                                               dir=str(self.path.parent))
+        os.close(fd)
+        temporary = Path(temporary_name)
+        try:
+            shutil.copy2(incoming, temporary)
+            self._validate_database(temporary)
+            with self._cx() as c:
+                c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            os.replace(temporary, self.path)
+            for suffix in ("-wal", "-shm"):
+                sidecar = Path(str(self.path) + suffix)
+                if sidecar.exists():
+                    sidecar.unlink()
+            # Opening runs any migration required by an older valid backup.
+            DB(self.path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+        return safety
+
+    def export_all_data(self, destination: str | Path,
+                        extra_files: list[str | Path] | None = None) -> Path:
+        """Export every user table as JSON and CSV in a portable ZIP archive."""
+        target = Path(destination)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            snapshot = self.backup(root / "netpulse.db")
+            manifest = {"exported_at": datetime.now().isoformat(), "schema_version": SCHEMA_VERSION,
+                        "tables": {}}
+            with closing(sqlite3.connect(str(snapshot))) as c:
+                c.row_factory = sqlite3.Row
+                tables = [row[0] for row in c.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+                )]
+                for table in tables:
+                    rows = [dict(row) for row in c.execute(f'SELECT * FROM "{table}"')]
+                    manifest["tables"][table] = len(rows)
+                    (root / f"{table}.json").write_text(
+                        json.dumps(rows, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+                    )
+                    with (root / f"{table}.csv").open("w", newline="", encoding="utf-8-sig") as handle:
+                        fields = list(rows[0]) if rows else [row[1] for row in c.execute(f'PRAGMA table_info("{table}")')]
+                        writer = csv.DictWriter(handle, fieldnames=fields)
+                        writer.writeheader()
+                        writer.writerows(rows)
+            (root / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+            for item in extra_files or []:
+                path = Path(item)
+                if path.is_file():
+                    shutil.copy2(path, root / path.name)
+            with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
+                for item in sorted(root.iterdir()):
+                    archive.write(item, item.name)
+        return target
+
+    def delete_saved_records(self, category: str, record_ids: list[int]) -> int:
+        """Delete selected saved records and their dependent evidence safely.
+
+        The UI only supplies integer primary keys, but the category is still
+        allow-listed here so no table or SQL fragment can be injected.
+        """
+        ids = sorted({int(item) for item in record_ids if int(item) > 0})
+        if not ids:
+            return 0
+        placeholders = ",".join("?" * len(ids))
+        with self._cx() as c:
+            if category == "sessions":
+                existing = c.execute(
+                    f"SELECT COUNT(*) AS n FROM sessions WHERE id IN ({placeholders})", ids
+                ).fetchone()["n"]
+                c.execute(f"DELETE FROM stats WHERE session_id IN ({placeholders})", ids)
+                c.execute(f"DELETE FROM top_ips WHERE session_id IN ({placeholders})", ids)
+                c.execute(f"DELETE FROM session_applications WHERE session_id IN ({placeholders})", ids)
+                c.execute(f"DELETE FROM session_events WHERE session_id IN ({placeholders})", ids)
+                c.execute(f"DELETE FROM sessions WHERE id IN ({placeholders})", ids)
+            elif category == "scans":
+                existing = c.execute(
+                    f"SELECT COUNT(*) AS n FROM network_scans WHERE id IN ({placeholders})",
+                    ids,
+                ).fetchone()["n"]
+                # Inventory survives scan-history cleanup; only its pointers to
+                # the removed evidence are cleared.
+                c.execute(
+                    f"UPDATE inventory_devices SET last_scan_id=NULL "
+                    f"WHERE last_scan_id IN ({placeholders})", ids,
+                )
+                c.execute(
+                    f"UPDATE device_ip_history SET last_scan_id=NULL "
+                    f"WHERE last_scan_id IN ({placeholders})", ids,
+                )
+                c.execute(
+                    f"UPDATE asset_observations SET last_scan_id=NULL "
+                    f"WHERE last_scan_id IN ({placeholders})", ids,
+                )
+                c.execute(
+                    f"UPDATE asset_events SET scan_id=NULL "
+                    f"WHERE scan_id IN ({placeholders})", ids,
+                )
+                c.execute(f"DELETE FROM network_scans WHERE id IN ({placeholders})", ids)
+            elif category == "assets":
+                existing = c.execute(
+                    f"SELECT COUNT(*) AS n FROM inventory_devices WHERE id IN ({placeholders})",
+                    ids,
+                ).fetchone()["n"]
+                c.execute(
+                    f"UPDATE scan_hosts SET device_id=NULL WHERE device_id IN ({placeholders})",
+                    ids,
+                )
+                c.execute(
+                    f"UPDATE inventory_devices SET merged_into_device_id=NULL "
+                    f"WHERE merged_into_device_id IN ({placeholders})", ids,
+                )
+                c.execute(
+                    f"DELETE FROM asset_merge_suggestions "
+                    f"WHERE device_a_id IN ({placeholders}) OR device_b_id IN ({placeholders})",
+                    ids + ids,
+                )
+                c.execute(f"DELETE FROM inventory_devices WHERE id IN ({placeholders})", ids)
+            elif category == "quality":
+                existing = c.execute(
+                    f"SELECT COUNT(*) AS n FROM quality_checks WHERE id IN ({placeholders})",
+                    ids,
+                ).fetchone()["n"]
+                c.execute(f"DELETE FROM quality_checks WHERE id IN ({placeholders})", ids)
+            elif category == "profiles":
+                existing = c.execute(
+                    f"SELECT COUNT(*) AS n FROM scan_profiles WHERE id IN ({placeholders})", ids
+                ).fetchone()["n"]
+                c.execute(f"DELETE FROM scan_profiles WHERE id IN ({placeholders})", ids)
+            elif category == "schedules":
+                existing = c.execute(
+                    f"SELECT COUNT(*) AS n FROM scan_schedules WHERE id IN ({placeholders})", ids
+                ).fetchone()["n"]
+                c.execute(f"DELETE FROM scan_schedules WHERE id IN ({placeholders})", ids)
+            elif category == "events":
+                existing = c.execute(
+                    f"SELECT COUNT(*) AS n FROM session_events WHERE id IN ({placeholders})", ids
+                ).fetchone()["n"]
+                c.execute(f"DELETE FROM session_events WHERE id IN ({placeholders})", ids)
+            else:
+                raise ValueError(f"Unsupported saved-data category: {category}")
+        return int(existing)
 
     # ── Stats ─────────────────────────────────────────────────────────────
     def save_stat(self, sid: int, d: Dict[str, int]):
@@ -750,6 +988,139 @@ class DB:
                 "SELECT * FROM top_ips WHERE session_id=? ORDER BY total_bytes DESC LIMIT ?",
                 (sid, n),
             ).fetchall()]
+
+    def save_session_applications(self, sid: int, applications: Dict[str, Dict]) -> None:
+        """Persist cumulative, privacy-safe application aggregates for a session."""
+        if not applications:
+            return
+
+        def iso(value):
+            return value.isoformat() if hasattr(value, "isoformat") else str(value or "")
+
+        rows = []
+        for key, app in applications.items():
+            destinations = []
+            for destination in app.get("destinations", {}).values():
+                destinations.append({
+                    "ip": destination.get("ip", ""),
+                    "bytes_in": int(destination.get("bytes_in", 0)),
+                    "bytes_out": int(destination.get("bytes_out", 0)),
+                    "packets": int(destination.get("packets", 0)),
+                    "ports": sorted(int(port) for port in destination.get("ports", set())),
+                    "protocols": sorted(str(item) for item in destination.get("protocols", set())),
+                    "first_seen": iso(destination.get("first_seen")),
+                    "last_seen": iso(destination.get("last_seen")),
+                })
+            rows.append((
+                sid, str(key), app.get("pid"), str(app.get("name") or "Unknown"),
+                int(app.get("bytes_in", 0)), int(app.get("bytes_out", 0)),
+                int(app.get("packets_in", 0)), int(app.get("packets_out", 0)),
+                float(app.get("peak_rate", 0)), float(app.get("average_rate", 0)),
+                iso(app.get("first_seen")), iso(app.get("last_seen")),
+                json.dumps(app.get("protocols", {}), ensure_ascii=False),
+                json.dumps(destinations, ensure_ascii=False),
+            ))
+        with self._cx() as c:
+            c.executemany(
+                """INSERT INTO session_applications
+                   (session_id,app_key,pid,process_name,bytes_in,bytes_out,
+                    packets_in,packets_out,peak_kbps,average_kbps,first_seen,last_seen,
+                    protocols,destinations) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(session_id,app_key) DO UPDATE SET
+                    pid=excluded.pid,process_name=excluded.process_name,
+                    bytes_in=excluded.bytes_in,bytes_out=excluded.bytes_out,
+                    packets_in=excluded.packets_in,packets_out=excluded.packets_out,
+                    peak_kbps=excluded.peak_kbps,average_kbps=excluded.average_kbps,
+                    first_seen=excluded.first_seen,last_seen=excluded.last_seen,
+                    protocols=excluded.protocols,destinations=excluded.destinations""",
+                rows,
+            )
+
+    def get_session_applications(self, sid: int, limit: int = 100) -> List[Dict[str, Any]]:
+        with self._cx() as c:
+            rows = c.execute(
+                """SELECT * FROM session_applications WHERE session_id=?
+                   ORDER BY bytes_in + bytes_out DESC LIMIT ?""", (sid, limit)
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            for key, fallback in (("protocols", {}), ("destinations", [])):
+                try:
+                    item[key] = json.loads(item.get(key) or "")
+                except (TypeError, ValueError):
+                    item[key] = fallback
+            result.append(item)
+        return result
+
+    def save_session_event(self, sid: int, event_type: str, title: str,
+                           detail: str = "", severity: str = "info",
+                           ts: datetime | str | None = None,
+                           fingerprint: str | None = None) -> int:
+        timestamp = ts.isoformat() if hasattr(ts, "isoformat") else str(ts or datetime.now().isoformat())
+        identity = fingerprint or hashlib.sha256(
+            f"{event_type}|{title}|{detail}|{timestamp}".encode("utf-8")
+        ).hexdigest()
+        with self._cx() as c:
+            c.execute(
+                """INSERT OR IGNORE INTO session_events
+                   (session_id,ts,event_type,severity,title,detail,fingerprint)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (sid, timestamp, event_type, severity, title, detail, identity),
+            )
+            row = c.execute(
+                "SELECT id FROM session_events WHERE session_id=? AND fingerprint=?",
+                (sid, identity),
+            ).fetchone()
+            return int(row["id"])
+
+    def list_session_events(self, sid: int | None = None,
+                            limit: int = 250) -> List[Dict[str, Any]]:
+        with self._cx() as c:
+            if sid is None:
+                rows = c.execute(
+                    "SELECT * FROM session_events ORDER BY ts DESC LIMIT ?", (limit,)
+                ).fetchall()
+            else:
+                rows = c.execute(
+                    "SELECT * FROM session_events WHERE session_id=? ORDER BY ts DESC LIMIT ?",
+                    (sid, limit),
+                ).fetchall()
+            return [dict(row) for row in rows]
+
+    def session_trends(self, days: int = 30, period: str = "day") -> List[Dict[str, Any]]:
+        if period not in {"day", "week"}:
+            raise ValueError("Trend period must be 'day' or 'week'")
+        cutoff = (datetime.now() - timedelta(days=max(1, days))).isoformat()
+        bucket = "substr(start_time,1,10)" if period == "day" else "strftime('%Y-W%W', start_time)"
+        with self._cx() as c:
+            rows = c.execute(
+                f"""SELECT {bucket} AS period, COUNT(*) AS sessions,
+                          SUM(total_pkts) AS packets,
+                          SUM(total_bytes_in) AS bytes_in,
+                          SUM(total_bytes_out) AS bytes_out,
+                          SUM(dropped_packets) AS dropped
+                   FROM sessions WHERE start_time>=?
+                   GROUP BY {bucket} ORDER BY period""", (cutoff,)
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def export_session(self, sid: int, destination: str | Path) -> Path:
+        with self._cx() as c:
+            row = c.execute("SELECT * FROM sessions WHERE id=?", (sid,)).fetchone()
+        if not row:
+            raise ValueError(f"Unknown capture session: {sid}")
+        payload = {
+            "session": dict(row), "stats": self.get_stats(sid),
+            "endpoints": self.get_top_ips(sid, 1000),
+            "applications": self.get_session_applications(sid, 1000),
+            "events": self.list_session_events(sid, 1000),
+        }
+        target = Path(destination)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+                          encoding="utf-8")
+        return target
 
     # ── Active network scans ─────────────────────────────────────────────
     def save_network_scan(self, scan: NetworkScan) -> int:

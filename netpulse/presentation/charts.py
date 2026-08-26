@@ -415,7 +415,10 @@ class PieChartCanvas:
         shapes = []
         S = self.SIZE
         cx, cy = S / 2, S / 2
-        r_outer = S / 2 - 10
+        # The slice labels are painted on a ring outside the donut, so the
+        # radius has to leave room for them. With only 10 px of margin they
+        # were clamped against the canvas edge and overlapped the arcs.
+        r_outer = max(40.0, S / 2 - 26)
         r_inner = r_outer * 0.45
 
         total = sum(v for _, v, _ in self._sections) or 1
@@ -484,7 +487,7 @@ class PieChartCanvas:
             ))
 
             # Label at midpoint outside
-            label_r = r_outer + 14
+            label_r = r_outer + 13
             lx = cx + math.cos(mid) * label_r - len(lbl) * 3
             ly = cy + math.sin(mid) * label_r - 5
             shapes.append(cv.Text(

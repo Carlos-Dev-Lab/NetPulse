@@ -92,6 +92,51 @@ class I18nTests(unittest.TestCase):
         self.assertEqual(tabs.tabs[0].label, "Escaneo")
         self.assertEqual(tabs.tabs[1].label.value, "Activos")
 
+    def test_selected_option_keys_survive_translation(self):
+        """A Dropdown value is an option key, not prose.
+
+        Translating it detached the control from its own options: the capture
+        interface selector and the packet filters rendered as empty fields
+        because "All" had become "Todos", which matches no option.
+        """
+        dropdown = ft.Dropdown(
+            label="Interface", value="All",
+            options=[ft.DropdownOption("All", "All interfaces")],
+        )
+
+        translate_tree(dropdown, "es")
+
+        self.assertEqual(dropdown.value, "All")
+        self.assertEqual(dropdown.label, "Interfaz")
+        self.assertEqual(dropdown.options[0].key, "All")
+        self.assertEqual(dropdown.options[0].text, "Todas las interfaces")
+
+    def test_typed_text_is_never_translated(self):
+        field = ft.TextField(label="Target networks", value="All")
+
+        translate_tree(field, "es")
+
+        self.assertEqual(field.value, "All")
+        self.assertEqual(field.label, "Redes objetivo")
+
+    def test_data_table_headings_are_translated(self):
+        table = ft.DataTable(
+            columns=[
+                ft.DataColumn(ft.Text("Time")),
+                ft.DataColumn(ft.Text("Src IP")),
+            ],
+            rows=[ft.DataRow(cells=[
+                ft.DataCell(ft.Text("Unavailable")),
+                ft.DataCell(ft.Text("10.0.0.1")),
+            ])],
+        )
+
+        translate_tree(table, "es")
+
+        self.assertEqual(table.columns[0].label.value, "Hora")
+        self.assertEqual(table.columns[1].label.value, "IP origen")
+        self.assertEqual(table.rows[0].cells[0].content.value, "No disponible")
+
 
 if __name__ == "__main__":
     unittest.main()

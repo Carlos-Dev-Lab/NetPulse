@@ -10,6 +10,7 @@ from .theme import selectable_dialog_content
 
 
 ES = {
+    "SELECTED": "SELECCIONADO",
     "Analytics": "Rendimiento",
     "Performance and capacity": "Rendimiento y capacidad",
     "Measure connection quality without duplicating dashboard traffic":
@@ -45,6 +46,7 @@ ES = {
     "RECENT QUALITY CHECKS": "COMPROBACIONES RECIENTES DE CALIDAD",
     "No saved quality checks yet.": "Todavía no hay comprobaciones de calidad guardadas.",
     "Insufficient data": "Datos insuficientes", "NO DEGRADATION": "SIN DEGRADACIÓN",
+    "Latency": "Latencia", "Loss": "Pérdida", "not available": "no disponible",
     "DEGRADING": "DEGRADACIÓN", "replies": "respuestas",
     "valid checks": "comprobaciones válidas", "capture peak": "pico capturado",
     "Overview": "Resumen", "Network": "Red", "Packets": "Paquetes",
@@ -74,6 +76,44 @@ ES = {
     "Bandwidth trends and protocol distribution in real time": "Tendencias de ancho de banda y protocolos en tiempo real",
     "Session history": "Historial de sesiones",
     "Compare stored captures and review their top endpoints": "Compara capturas guardadas y sus principales destinos",
+    "Traffic": "Tráfico", "Share": "Participación",
+    "Last activity": "Última actividad", "Identity / Geo": "Identidad / Geo",
+    "TOTAL TRANSFERRED": "TOTAL TRANSFERIDO",
+    "AVERAGE THROUGHPUT": "VELOCIDAD PROMEDIO",
+    "PEAK SECOND": "SEGUNDO DE MAYOR ACTIVIDAD",
+    "TRAFFIC DIRECTION": "DIRECCIÓN DEL TRÁFICO",
+    "REMOTE ENDPOINTS": "DESTINOS REMOTOS",
+    "SESSION TIMELINE  ( KB/s per second )": "CRONOLOGÍA DE LA SESIÓN  ( KB/s por segundo )",
+    "PROTOCOL ACTIVITY": "ACTIVIDAD POR PROTOCOLO",
+    "Packet counts accumulated during this capture.":
+        "Paquetes acumulados durante esta captura.",
+    "Select a session to calculate protocol activity.":
+        "Selecciona una sesión para calcular la actividad por protocolo.",
+    "SESSION HIGHLIGHTS": "ASPECTOS DESTACADOS DE LA SESIÓN",
+    "Select a session to generate a concise activity summary.":
+        "Selecciona una sesión para generar un resumen conciso de actividad.",
+    "REMOTE ENDPOINTS  ( ranked by traffic )":
+        "DESTINOS REMOTOS  ( ordenados por tráfico )",
+    "duration": "duración", "Received versus sent": "Recibido frente a enviado",
+    "No samples": "Sin muestras",
+    "No protocol samples were stored for this session.":
+        "No se guardaron muestras de protocolos para esta sesión.",
+    "none recorded": "ninguno registrado", "no peak sample": "sin muestra de pico",
+    "Busiest endpoint": "Destino con más actividad",
+    "Dominant protocol": "Protocolo dominante",
+    "Peak throughput": "Velocidad máxima",
+    "Compare with": "Comparar con", "Optional second session": "Segunda sesión opcional",
+    "EXPORT SESSION": "EXPORTAR SESIÓN", "SESSION COMPARISON": "COMPARACIÓN DE SESIONES",
+    "LAST 30 DAYS": "ÚLTIMOS 30 DÍAS",
+    "Choose a second session to compare volume, packets, duration and drops.":
+        "Elige una segunda sesión para comparar volumen, paquetes, duración y descartes.",
+    "Daily trends will appear when captures are available.":
+        "Las tendencias diarias aparecerán cuando haya capturas.",
+    "APPLICATIONS AND PROCESSES": "APLICACIONES Y PROCESOS",
+    "ALERTS, DROPS AND EVENTS": "ALERTAS, DESCARTES Y EVENTOS",
+    "No historical application data for this session.":
+        "No hay datos históricos de aplicaciones para esta sesión.",
+    "No session events recorded.": "No hay eventos registrados para esta sesión.",
     "Application traffic": "Tráfico por aplicación",
     "See which local processes consume network bandwidth": "Consulta qué procesos locales consumen ancho de banda",
     "Understand which applications communicate, where and how much": "Comprende qué aplicaciones se comunican, con quién y cuánto tráfico generan",
@@ -86,7 +126,7 @@ ES = {
     "Highest download": "Mayor descarga", "Highest upload": "Mayor subida",
     "Unidentified processes": "Procesos sin identificar",
     "Application": "Aplicación", "Download": "Descarga", "Upload": "Subida",
-    "Activity": "Actividad",
+    "Activity": "Actividad", "Destinations": "Destinos",
     "applications": "aplicaciones", "instances": "instancias",
     "active": "activas", "Inactive": "Inactiva", "ACTIVE": "ACTIVA",
     "INACTIVE": "INACTIVA", "destinations": "destinos",
@@ -114,6 +154,44 @@ ES = {
     "No matching packets remain in the live buffer.": "No quedan paquetes coincidentes en el búfer en vivo.",
     "System settings": "Ajustes del sistema",
     "Capture source, alert thresholds and local storage": "Fuente de captura, alertas y almacenamiento local",
+    "Data": "Datos", "Data management": "Gestión de datos",
+    "Review and control records stored by NetPulse":
+        "Revisa y controla los registros almacenados por NetPulse",
+    "SESSIONS": "SESIONES", "SCANS": "ESCANEOS", "ASSETS": "ACTIVOS",
+    "CHECKS": "COMPROBACIONES", "DATABASE SIZE": "TAMAÑO DE LA BASE",
+    "Data type": "Tipo de datos", "Capture sessions": "Sesiones de captura",
+    "Capture session": "Sesión de captura", "Network scan": "Escaneo de red",
+    "Inventory asset": "Activo del inventario",
+    "Network scans": "Escaneos de red", "Inventory assets": "Activos del inventario",
+    "Quality checks": "Comprobaciones de calidad",
+    "Scan profiles": "Perfiles de escaneo", "Scan profile": "Perfil de escaneo",
+    "Scan schedules": "Programaciones de escaneo", "Scan schedule": "Programación de escaneo",
+    "Session events": "Eventos de sesión", "Session event": "Evento de sesión",
+    "BACKUP, RESTORE AND EXPORT": "RESPALDO, RESTAURACIÓN Y EXPORTACIÓN",
+    "Available backups": "Respaldos disponibles",
+    "CREATE BACKUP": "CREAR RESPALDO", "EXPORT ALL DATA": "EXPORTAR TODOS LOS DATOS",
+    "RESTORE SELECTED": "RESTAURAR SELECCIONADO",
+    "Create a verified backup before major changes.":
+        "Crea un respaldo verificado antes de realizar cambios importantes.",
+    "Restore database backup?": "¿Restaurar el respaldo de la base?",
+    "The current database will be backed up first. The selected copy will then replace it after an integrity check.":
+        "Primero se respaldará la base actual. La copia seleccionada la reemplazará después de comprobar su integridad.",
+    "RESTORE": "RESTAURAR", "Enabled": "Habilitada", "Disabled": "Deshabilitada",
+    "Search saved records": "Buscar registros guardados",
+    "1 selected": "1 seleccionado",
+    "DELETE SELECTED": "ELIMINAR SELECCIONADOS",
+    "Select all visible": "Seleccionar todos los visibles",
+    "SAVED RECORDS": "REGISTROS GUARDADOS",
+    "No saved records in this category.": "No hay registros guardados en esta categoría.",
+    "Deletion is permanent. Related samples and evidence are removed safely; an active capture session cannot be selected.":
+        "La eliminación es permanente. Las muestras y evidencias relacionadas se eliminan de forma segura; una sesión de captura activa no puede seleccionarse.",
+    "Select record": "Seleccionar registro",
+    "Active capture session": "Sesión de captura activa",
+    "Delete record": "Eliminar registro", "Quality check": "Comprobación de calidad",
+    "Delete saved data?": "¿Eliminar datos guardados?",
+    "This action cannot be undone. Related records will also be removed.":
+        "Esta acción no se puede deshacer. También se eliminarán los registros relacionados.",
+    "DELETE": "ELIMINAR", "CANCEL": "CANCELAR",
     "Tip: drag over any result text to select it, then press Ctrl+C.": "Consejo: arrastra sobre cualquier texto de resultados para seleccionarlo y luego pulsa Ctrl+C.",
     "APPEARANCE": "APARIENCIA",
     "Customize the interface without restarting NetPulse.": "Personaliza la interfaz sin reiniciar NetPulse.",
@@ -367,6 +445,24 @@ ES = {
     "e.g. 5000  (0 = disabled)": "ej. 5000  (0 = desactivado)",
     "↓ in  /  ↑ out peak": "↓ entrada  /  ↑ pico de salida",
     "[ None ]": "[ Ninguna ]", "NetPulse — Network Analyzer": "NetPulse — Analizador de red",
+    # Network map. Its toolbar, detail panel and connection table were built
+    # from a mix of literal Spanish and untranslated English, so half the
+    # section stayed in the other language whichever one was selected.
+    "View": "Vista", "Host": "Host", "Online": "En línea", "Risk": "Riesgo",
+    "Select a node": "Selecciona un nodo",
+    "Choose any device in the map to inspect its identity and services.":
+        "Elige cualquier dispositivo del mapa para ver su identidad y sus servicios.",
+    "INFORMATION": "INFORMACIÓN",
+    "Hostname": "Nombre de host", "Type": "Tipo",
+    "Operating system": "Sistema operativo",
+    "Router": "Router", "Local": "Este equipo", "Device": "Dispositivo",
+    "Low": "Bajo", "Medium": "Medio", "High": "Alto",
+    "Zoom in": "Acercar", "Zoom out": "Alejar", "Reset zoom": "Restablecer el zoom",
+    "CONNECTIONS DISCOVERED": "CONEXIONES DESCUBIERTAS",
+    "Origin": "Origen", "Destination": "Destino", "Service": "Servicio",
+    "Status": "Estado",
+    "Open": "Abierto", "Host discovery": "Descubrimiento de host",
+    "No connections match this filter.": "Ninguna conexión coincide con este filtro.",
 }
 
 CATALOGS = {"en": {}, "es": ES}
@@ -403,6 +499,8 @@ def tr(value: str, language: str | None = None) -> str:
             "Evidencia: ": "Evidence: ", "Dispositivo: ": "Device: ",
             "Búsqueda global · ": "Global search · ",
             "Inventario del dispositivo · ": "Device inventory · ",
+            "Actualizado a las ": "Updated at ", "Mostrando ": "Showing ",
+            "Falló la actualización: ": "Update failed: ",
         }
         result = value
         for translated, source in reverse_prefixes.items():
@@ -412,10 +510,14 @@ def tr(value: str, language: str | None = None) -> str:
         reverse_replacements = (
             (" dispositivos", " devices"), (" dispositivo(s)", " device(s)"),
             (" descartados", " dropped"),
-            (" paquetes", " packets"), (" equipos", " hosts"),
+            (" paquetes", " packets"), (" seleccionados", " selected"),
+            (" equipos", " hosts"),
             (" segmentos", " segments"), (" nodos", " nodes"),
             (" hallazgos en ", " findings in "), (" hallazgos", " findings"),
             (" más", " more"),
+            (" puertos en escucha encontrados", " listening ports found"),
+            (" puertos en escucha coinciden con los filtros actuales.",
+             " listening ports match the current filters."),
             (" puertos en escucha", " listening ports"),
             (" visibles en red", " network-visible"),
             (" requieren atención", " require attention"),
@@ -424,6 +526,9 @@ def tr(value: str, language: str | None = None) -> str:
             (" cambios", " changes"), (" riesgo ", " risk "),
             (" puntos descontados", " points deducted"),
             ("Cada ", "Every "), (" · próxima ", " · next "),
+            ("La latencia reciente aumentó ", "Recent latency increased by "),
+            ("Reciente ", "Recent "), (" frente a base ", " vs baseline "),
+            (" (pico capturado)", " (capture peak)"),
             ("Detectado ahora", "Detected now"), ("Ya no responde", "No longer responds"),
             (" servicio(s) abierto(s)", " open service(s)"),
             (" de riesgo alto", " high-risk"), (" de riesgo medio", " medium-risk"),
@@ -476,10 +581,14 @@ def tr(value: str, language: str | None = None) -> str:
         ("capture peak", "pico capturado"),
         (" devices", " dispositivos"), (" device(s)", " dispositivo(s)"),
         (" dropped", " descartados"),
-        (" packets", " paquetes"), (" sessions", " sesiones"), (" hosts", " equipos"),
+        (" packets", " paquetes"), (" sessions", " sesiones"),
+        (" selected", " seleccionados"), (" hosts", " equipos"),
         (" segments", " segmentos"), (" nodes", " nodos"),
         (" findings in ", " hallazgos en "), (" findings", " hallazgos"),
         (" more", " más"),
+        (" listening ports found", " puertos en escucha encontrados"),
+        (" listening ports match the current filters.",
+         " puertos en escucha coinciden con los filtros actuales."),
         (" listening ports", " puertos en escucha"),
         (" network-visible", " visibles en red"),
         (" require attention", " requieren atención"),
@@ -492,6 +601,9 @@ def tr(value: str, language: str | None = None) -> str:
         (" changes", " cambios"), (" risk ", " riesgo "),
         (" points deducted", " puntos descontados"),
         ("Every ", "Cada "), (" min · ", " min · "), (" · next ", " · próxima "),
+        ("Recent latency increased by ", "La latencia reciente aumentó "),
+        ("Recent ", "Reciente "), (" vs baseline ", " frente a base "),
+        (" (capture peak)", " (pico capturado)"),
         ("Detected now", "Detectado ahora"),
         ("No longer responds", "Ya no responde"),
         (" open service(s)", " servicio(s) abierto(s)"),
@@ -531,10 +643,17 @@ def translate_tree(control, language: str, seen=None) -> None:
     seen.add(id(control))
     if isinstance(control, ft.AlertDialog):
         selectable_dialog_content(control)
-    for attr in (
-        "value", "label", "hint_text", "helper_text", "content", "text",
+    # ``value`` is prose only on ``Text``. On a Dropdown it is the selected
+    # option key, on a TextField it is what the operator typed: translating
+    # either one silently detaches the control from its own options and the
+    # field renders empty.
+    attributes = (
+        ("value",) if isinstance(control, ft.Text) else ()
+    ) + (
+        "label", "hint_text", "helper_text", "content", "text",
         "tooltip", "error_text",
-    ):
+    )
+    for attr in attributes:
         value = getattr(control, attr, None)
         if isinstance(value, str):
             translated = _translate(value, language)
@@ -551,6 +670,9 @@ def translate_tree(control, language: str, seen=None) -> None:
     for attr in (
         "content", "controls", "destinations", "options", "leading", "trailing",
         "icon", "selected_icon", "title", "subtitle", "label", "actions", "tabs",
+        # DataTable keeps its headings and body outside ``controls``; without
+        # these three the packet and history tables stay in English.
+        "columns", "rows", "cells",
     ):
         child = getattr(control, attr, None)
         if isinstance(child, (list, tuple)):

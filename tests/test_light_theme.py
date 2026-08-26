@@ -122,6 +122,11 @@ class PaletteContractTests(unittest.TestCase):
         self.assertEqual(light.color_scheme.on_surface,
                          appearance_palette("daylight", "cyan")["text"])
 
+    def test_native_canvas_uses_each_theme_background(self):
+        for name in APPEARANCE_THEMES:
+            palette = appearance_palette(name, "cyan")
+            self.assertEqual(make_theme(palette=palette).canvas_color, palette["bg"])
+
     def test_protocol_colours_follow_the_active_palette(self):
         set_active_palette(appearance_palette("netpulse", "cyan"))
         self.assertEqual(proto_color("TCP"), CYAN)

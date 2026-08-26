@@ -28,8 +28,8 @@ from netpulse.presentation.theme import (
 )
 from netpulse.presentation.views import NetworkView
 
-VIEW_NAMES = ["Overview", "Network", "Local ports", "Packets",
-              "Analytics", "History", "Apps", "Settings"]
+VIEW_NAMES = ["Overview", "Network", "Apps", "Packets",
+              "Analytics", "History", "Local ports", "Data", "Settings"]
 CHILD_ATTRS = ("content", "controls", "actions", "destinations", "leading",
                "trailing", "title", "subtitle", "rows", "cells", "icon")
 
@@ -440,7 +440,7 @@ class RepaintCoverageTests(unittest.TestCase):
                 # Switch the theme while sitting on Overview.
                 apply_button = None
                 theme_dropdown = None
-                rail.selected_index = 7
+                rail.selected_index = 8
                 rail.on_change(SimpleNamespace(control=rail))
                 stack, seen = [layout], set()
                 while stack:

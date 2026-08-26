@@ -1,28 +1,73 @@
+# Python
 __pycache__/
 *.py[cod]
-.pytest_cache/
-.venv/
-.idea/
+*$py.class
 *.egg-info/
-.coverage
-htmlcov/
+.eggs/
 build/
 dist/
+
+# Entornos virtuales y variables locales
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+
+# Cachés, cobertura y herramientas de desarrollo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyright/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.hypothesis/
+
+# Editores
+.idea/
+.vscode/
+*.code-workspace
 
 # Datos y configuración generados durante la ejecución
 data/*.db
 data/*.db-shm
 data/*.db-wal
+data/*.db-journal
+data/*.sqlite
+data/*.sqlite3
 data/settings.json
 data/netpulse.log*
+data/backups/
 exports/
 tmp/
+
+# Capturas de red y exportaciones generadas fuera de exports/
+*.pcap
+*.pcapng
+/netpulse_export_*.csv
+/netpulse_session_*.json
+/netpulse_export_*.json
+/netpulse_export_*.zip
+/netpulse_report_*.pdf
+/netpulse_report_*.html
 
 # Capturas locales utilizadas durante la revisión visual
 /full-screen*.png
 /window-medium*.png
+/desktop-*.png
+/screenshot-*.png
 
 # Archivos del sistema y editores
 .DS_Store
 Thumbs.db
+Desktop.ini
 *.log
+*.tmp
+*.bak
+*.swp
+~$*

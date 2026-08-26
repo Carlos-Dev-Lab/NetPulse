@@ -223,6 +223,12 @@ class SystemSmokeTests(unittest.TestCase):
             first = db.new_session("Ethernet")
             db.close_session(first, 20, 1024, 512)
             second = db.new_session("Wi-Fi")
+            db.save_stat(second, {
+                "bytes_in": 2048, "bytes_out": 1024,
+                "pkts_in": 30, "pkts_out": 10,
+                "TCP": 30, "HTTPS": 20, "DNS": 4,
+            })
+            db.upsert_ips(second, [("1.1.1.1", 3072, 40)])
             db.close_session(second, 40, 2048, 1024)
             view = HistoryView(db)
             view.build()
@@ -233,7 +239,13 @@ class SystemSmokeTests(unittest.TestCase):
             self.assertEqual(view._session_dropdown.value, str(second))
             self.assertEqual(len(view._session_dropdown.options), 2)
             self.assertEqual(view.r_session_count.current.value, "2 sessions")
-            self.assertIn("40 pkts", view.r_info.current.value)
+            self.assertIn("Completed", view.r_info.current.value)
+            self.assertIn("Wi-Fi", view.r_info.current.value)
+            self.assertEqual(view._metric_values["volume"][0].value, "3.0 KB")
+            self.assertEqual(view._metric_values["endpoints"][0].value, "1")
+            self.assertGreater(len(view._protocol_rows.controls), 0)
+            self.assertEqual(len(view.r_table.current.rows), 1)
+            self.assertIn("1.1.1.1", view._insight_text.value)
 
     def test_inventory_editor_opens_and_persists_device_metadata(self):
         class PageStub:
