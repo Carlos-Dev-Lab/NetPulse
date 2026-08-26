@@ -41,7 +41,10 @@ cada 200 ms y se adapta al tamaño y al escalado DPI de la ventana de Windows.
 - Exportación de los paquetes visibles a CSV.
 - Gráficos de ancho de banda y distribución acumulada por protocolo.
 - Asociación aproximada de puertos con procesos locales mediante psutil.
-- Alertas configurables por ancho de banda y paquetes por segundo.
+- Alertas configurables por ancho de banda y paquetes por segundo, conservadas
+  entre reinicios junto con la interfaz de captura seleccionada.
+- Contador de paquetes descartados en la barra de estado: avisa cuando las
+  colas se saturan y las tasas mostradas dejan de ser completas.
 
 ### Tráfico por aplicación
 
@@ -94,9 +97,34 @@ agenda y su próxima ejecución se conservan en SQLite entre reinicios.
 - Historial de escaneos consultable desde la interfaz.
 - Registro del método, comando, versión de Nmap y duración del análisis.
 
+### Apariencia
+
+- Seis temas: cuatro oscuros (NetPulse, Midnight, Graphite, Pure black) y dos
+  claros (Daylight, Paper), con cinco acentos y tres densidades.
+- El cambio de tema repinta el espacio de trabajo completo sin reiniciar:
+  superficies, texto, colores de estado, insignias de protocolo y gráficos.
+- Contraste verificado en las ocho pestañas de los seis temas: todo el texto
+  pequeño alcanza 4.5:1 (AA), el texto principal 7:1 (AAA) y los iconos 3:1.
+- Superficies en escalera de elevación y bordes visibles, para que las tarjetas
+  se distingan del fondo en vez de fundirse con él.
+- Colores de protocolo separados en la rueda de tonos: ninguna pareja de
+  insignias coincide a la vez en tono, luminancia y saturación.
+- Cinco acentos con valores propios (cian, azul, violeta, magenta, pizarra) que
+  colorean solo el cromo. El verde, el ámbar y el rojo quedan reservados para el
+  estado, así que el acento nunca hace que la interfaz parezca un aviso.
+- El estado benigno es neutro y el marco de las tarjetas es uniforme: el color
+  aparece donde significa algo, no como decoración.
+- Iconografía Material unificada en encabezados, botones y diálogos.
+
 ### Historial y persistencia
 
 - Sesiones de captura almacenadas en SQLite.
+- Esquema versionado con `PRAGMA user_version`: las migraciones costosas se
+  ejecutan una sola vez, no en cada arranque.
+- Retención configurable del historial de capturas (7, 30, 90, 365 días o todo),
+  aplicada al iniciar la aplicación.
+- Registro persistente con rotación en `data/netpulse.log` (2 MB × 3 archivos);
+  el nivel se ajusta con la variable `NETPULSE_LOG_LEVEL`.
 - Resúmenes de tráfico por segundo.
 - Principales IP y conexiones de cada sesión.
 - Resultados Nmap normalizados por escaneo, dispositivo, servicio y alerta.
@@ -495,24 +523,33 @@ Las decisiones detalladas están en
 network_analyzer/
 ├── netpulse/
 │   ├── __main__.py                 Punto de entrada: python -m netpulse
-│   ├── config.py                   Rutas y directorios de ejecución
+│   ├── config.py                   Rutas, preferencias y retención
+│   ├── logging_setup.py            Registro con rotación en data/netpulse.log
 │   ├── domain/
 │   │   ├── models.py               Modelo de paquete capturado
 │   │   ├── state.py                Agregación y estado en tiempo real
-│   │   └── network_scan.py         Escaneos, hosts, servicios y hallazgos
+│   │   ├── network_scan.py         Escaneos, hosts, servicios y hallazgos
+│   │   ├── comparison.py           Diferencias entre análisis consecutivos
+│   │   ├── diagnostics.py          Prioridad, evidencia y acciones
+│   │   ├── health.py               Puntuación explicable de salud
+│   │   └── topology.py             Agrupación por segmentos y nodos
 │   ├── infrastructure/
-│   │   ├── sniffer.py              Captura Scapy/Npcap y procesos
+│   │   ├── sniffer.py              Captura Scapy/Npcap, procesos y descartes
 │   │   ├── nmap_scanner.py         Perfiles, ejecución, XML, riesgo y cambios
-│   │   └── database.py             Esquema y consultas SQLite
+│   │   └── database.py             Esquema versionado y consultas SQLite
 │   ├── services/
-│   │   └── ip_info.py              DNS inverso, país y ASN
+│   │   ├── ip_info.py              DNS inverso, país y ASN
+│   │   ├── local_ports.py          Puertos en escucha del equipo local
+│   │   ├── performance.py          Latencia, jitter, pérdida y capacidad
+│   │   └── reporting.py            Informes PDF, HTML y CSV
 │   └── presentation/
 │       ├── app.py                  Composición y ciclo de actualización
 │       ├── application_traffic.py  Modelo de presentación por aplicación
 │       ├── views.py                Vistas de escritorio adaptables
-│       ├── charts.py               Gráficos personalizados
+│       ├── charts.py               Gráficos personalizados sensibles al tema
+│       ├── dialogs.py              Apertura y cierre de diálogos Flet
 │       ├── i18n.py                 Textos en español e inglés
-│       └── theme.py                Colores y tema Flet
+│       └── theme.py                Paletas claras y oscuras, tema Flet
 ├── data/
 │   └── netpulse.db                 Base creada durante la ejecución
 ├── docs/
@@ -527,7 +564,14 @@ network_analyzer/
 │   ├── test_application_traffic.py Agrupación, conexiones y picos
 │   ├── test_sniffer.py             Evidencia de paquetes
 │   ├── test_state.py               Agregación de tráfico
+│   ├── test_dialogs.py             API de diálogos Flet 0.85
+│   ├── test_persistence.py         Preferencias, retención y descartes
+│   ├── test_light_theme.py         Paletas, contraste y gráficos
+│   ├── test_colorimetry.py         Contraste real de las 8 pestañas x 6 temas
+│   ├── test_startup.py             Arranque completo sin abrir ventana
 │   └── test_system.py              Dependencias y componentes Flet
+├── .github/workflows/tests.yml     Integración continua en Windows
+├── pyproject.toml
 ├── requirements.txt
 └── README.md
 ```
@@ -556,7 +600,7 @@ sistema operativo.
 .\.venv\Scripts\python.exe -W error::DeprecationWarning -m unittest discover -s tests -v
 ```
 
-La revisión actual ejecuta **72 pruebas automatizadas**.
+La revisión actual ejecuta **155 pruebas automatizadas**. El mismo comando se ejecuta en integración continua sobre Windows con Python 3.10, 3.11 y 3.12 (`.github/workflows/tests.yml`).
 
 ### Comprobación de sintaxis
 
@@ -589,21 +633,35 @@ SYSTEM_CHECK_OK
 
 NetPulse está en un estado funcional avanzado para uso local y pruebas piloto.
 Su captura real, inventario, tráfico por aplicación, análisis Nmap, informes y
-persistencia están cubiertos por pruebas. Para considerarlo un producto
-empresarial listo para producción, las prioridades recomendadas son:
+persistencia están cubiertos por pruebas.
 
-1. Copia y restauración de SQLite, retención configurable y migraciones de
-   esquema versionadas.
-2. Registro persistente con rotación, centro de diagnóstico y métricas de
-   paquetes descartados.
-3. Captura IPv6 y mejor seguimiento del ciclo de vida de conexiones y procesos.
-4. Convertir la planificación en un servicio de Windows que funcione con la UI
+### Resuelto en esta revisión
+
+- Migración completa a la API de diálogos de Flet 0.85. Cuatro diálogos —entre
+  ellos el error de inicio de captura y las alertas de tráfico— asignaban el
+  atributo `page.dialog`, eliminado en 0.85, y nunca llegaban a mostrarse. Una
+  prueba estática impide que la API antigua vuelva a aparecer.
+- Umbrales de alerta, interfaz de captura y retención persistidos en
+  `data/settings.json`.
+- Esquema SQLite versionado, `busy_timeout`, claves foráneas activas y purga por
+  retención.
+- Registro con rotación en `data/netpulse.log`.
+- Contador de paquetes descartados visible en la barra de estado.
+- Temas claros con contraste verificado y repintado completo en caliente.
+- Iconografía Material unificada y textos obsoletos corregidos.
+- `pyproject.toml` e integración continua en Windows con Python 3.10–3.12.
+
+### Prioridades siguientes
+
+1. Copia y restauración de SQLite bajo demanda desde la interfaz.
+2. Captura IPv6 y mejor seguimiento del ciclo de vida de conexiones y procesos.
+3. Convertir la planificación en un servicio de Windows que funcione con la UI
    cerrada.
-5. Instalador firmado, actualización segura y configuración explícita de
+4. Instalador firmado, actualización segura y configuración explícita de
    privacidad para el enriquecimiento externo.
-6. Dividir los módulos grandes de vistas y base de datos para facilitar su
+5. Dividir los módulos grandes de vistas y base de datos para facilitar su
    mantenimiento.
-7. Añadir pruebas end-to-end de escritorio, sesiones prolongadas, alto volumen
+6. Añadir pruebas end-to-end de escritorio, sesiones prolongadas, alto volumen
    y bases migradas desde versiones anteriores.
 
 ## Solución de problemas
@@ -660,4 +718,4 @@ el enriquecimiento no responda.
 El proyecto se ha comprobado con Python 3.12, Flet 0.85.3, Scapy 2.7.0,
 psutil 7.2.2, Nmap 7.99 y Npcap en Windows. La validación incluye interfaz de
 escritorio, captura real, escaneo Nmap, persistencia y pruebas
-automatizadas. La suite actual contiene 72 pruebas.
+automatizadas. La suite actual contiene 155 pruebas.

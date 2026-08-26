@@ -1,0 +1,600 @@
+<title>Colorimetría de NetPulse</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+<style>
+:root {
+  --ground:#F3F5F7; --surface:#FFFFFF; --sunken:#E9EDF1;
+  --ink:#141A21; --ink-2:#4A5763; --ink-3:#707E8B;
+  --rule:#D4DAE1; --rule-strong:#B7C0CA;
+  --accent:#2B6E80; --pass:#2C6B49; --fail:#A2333F;
+  --measure:66ch;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground:#0F1318; --surface:#171C23; --sunken:#12171D;
+    --ink:#E6EBF1; --ink-2:#A5B2BE; --ink-3:#7A8794;
+    --rule:#2A323B; --rule-strong:#3C4650;
+    --accent:#6FBACD; --pass:#63B487; --fail:#E1848E;
+  }
+}
+:root[data-theme="dark"] {
+  --ground:#0F1318; --surface:#171C23; --sunken:#12171D;
+  --ink:#E6EBF1; --ink-2:#A5B2BE; --ink-3:#7A8794;
+  --rule:#2A323B; --rule-strong:#3C4650;
+  --accent:#6FBACD; --pass:#63B487; --fail:#E1848E;
+}
+*, *::before, *::after { box-sizing:border-box; }
+body {
+  margin:0; background:var(--ground); color:var(--ink);
+  font-family:"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  font-size:16px; line-height:1.6; -webkit-font-smoothing:antialiased;
+}
+.wrap { max-width:1120px; margin:0 auto; padding:0 24px 88px; }
+.eyebrow {
+  font-family:"IBM Plex Mono", ui-monospace, monospace;
+  font-size:11px; letter-spacing:.16em; text-transform:uppercase;
+  color:var(--accent); margin:0 0 12px;
+}
+h1 {
+  font-size:clamp(2rem, 5vw, 3rem); line-height:1.09; font-weight:600;
+  letter-spacing:-.025em; margin:0 0 20px; text-wrap:balance; max-width:19ch;
+}
+h2 {
+  font-size:clamp(1.3rem,2.6vw,1.7rem); font-weight:600; letter-spacing:-.015em;
+  margin:0 0 10px; text-wrap:balance;
+}
+h3 { font-size:1.05rem; font-weight:600; margin:0; letter-spacing:-.01em; }
+h4 { margin:0; font-size:.95rem; font-weight:600; }
+p { margin:0 0 14px; max-width:var(--measure); color:var(--ink-2); }
+p:last-child { margin-bottom:0; }
+p.lead { font-size:1.08rem; color:var(--ink); }
+code {
+  font-family:"IBM Plex Mono", ui-monospace, monospace; font-size:.86em;
+  background:var(--sunken); padding:.12em .38em; border-radius:3px; color:var(--ink);
+}
+header.hero { padding:80px 0 40px; border-bottom:1px solid var(--rule); }
+.hero-meta {
+  display:flex; flex-wrap:wrap; gap:10px 30px; margin-top:26px;
+  font-family:"IBM Plex Mono", ui-monospace, monospace; font-size:12px;
+  color:var(--ink-3); font-variant-numeric:tabular-nums;
+}
+.hero-meta b { color:var(--ink); font-weight:500; }
+section.band { padding:54px 0 0; }
+.section-head { margin-bottom:26px; }
+.defects {
+  display:grid; gap:1px; background:var(--rule); border:1px solid var(--rule);
+  border-radius:7px; overflow:hidden;
+  grid-template-columns:repeat(auto-fit,minmax(238px,1fr));
+}
+.defect { background:var(--surface); padding:20px; display:flex;
+  flex-direction:column; gap:9px; }
+.defect p { font-size:.86rem; max-width:none; }
+.metric {
+  font-family:"IBM Plex Mono", ui-monospace, monospace; font-size:12.5px;
+  font-variant-numeric:tabular-nums; display:flex; align-items:baseline;
+  gap:9px; margin-top:auto; padding-top:10px;
+}
+.metric .was { color:var(--fail); }
+.metric .now { color:var(--pass); }
+.metric .arr { color:var(--rule-strong); }
+.theme-block { margin-top:38px; }
+.theme-name {
+  display:flex; align-items:baseline; gap:12px; padding-bottom:10px;
+  border-bottom:1px solid var(--rule); margin-bottom:18px;
+}
+.theme-kind {
+  font-family:"IBM Plex Mono", ui-monospace, monospace; font-size:10px;
+  letter-spacing:.14em; text-transform:uppercase; color:var(--ink-3);
+}
+.pair { display:grid; gap:18px; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); }
+.specimen { margin:0; display:flex; flex-direction:column; gap:10px; }
+.spec-state {
+  font-family:"IBM Plex Mono", ui-monospace, monospace; font-size:10px;
+  letter-spacing:.14em; text-transform:uppercase; color:var(--ink-3);
+}
+.stage { border-radius:8px; overflow:hidden; border:1px solid var(--rule); }
+.stage-bar { padding:9px 13px; }
+.stage-card {
+  margin:13px; border-radius:9px; padding:13px;
+  display:flex; flex-direction:column; gap:5px;
+}
+.chips { display:flex; flex-wrap:wrap; gap:5px; margin-top:6px; }
+.chip {
+  font-family:"IBM Plex Mono", ui-monospace, monospace; font-size:9px;
+  font-weight:600; padding:2px 6px; border-radius:4px; border:1px solid;
+  line-height:1.5;
+}
+.readout { display:flex; flex-wrap:wrap; gap:6px 22px; margin:0; }
+.readout div { display:flex; flex-direction:column; }
+.readout dt { font-size:10px; color:var(--ink-3); letter-spacing:.02em; }
+.readout dd {
+  margin:0; font-family:"IBM Plex Mono", ui-monospace, monospace;
+  font-size:15px; font-weight:500; font-variant-numeric:tabular-nums;
+}
+.readout dd span { font-size:10px; color:var(--ink-3); }
+.readout .good { color:var(--pass); }
+.readout .bad { color:var(--fail); }
+.wheels { display:grid; gap:30px; grid-template-columns:repeat(auto-fit,minmax(290px,1fr)); align-items:start; }
+.wheel-card { display:flex; flex-direction:column; gap:12px; }
+.wheel-card svg { width:100%; max-width:270px; height:auto; margin:0 auto; display:block; }
+.wheel-label {
+  font-family:"IBM Plex Mono", ui-monospace, monospace; font-size:8px;
+  fill:var(--ink-3); text-anchor:middle;
+}
+.table-scroll { overflow-x:auto; border:1px solid var(--rule); border-radius:7px; background:var(--surface); }
+table { border-collapse:collapse; width:100%; font-size:.85rem; }
+th, td { text-align:left; padding:9px 14px; border-bottom:1px solid var(--rule); white-space:nowrap; }
+thead th {
+  font-family:"IBM Plex Mono", ui-monospace, monospace; font-size:10px;
+  letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3); font-weight:500;
+}
+tbody th { font-weight:500; }
+tbody tr:last-child th, tbody tr:last-child td { border-bottom:0; }
+td { font-family:"IBM Plex Mono", ui-monospace, monospace;
+  font-variant-numeric:tabular-nums; color:var(--ink-2); }
+tr.risk .verdict { color:var(--fail); }
+.verdict { color:var(--pass); }
+.rules {
+  display:grid; gap:1px; background:var(--rule); border:1px solid var(--rule);
+  border-radius:7px; overflow:hidden;
+  grid-template-columns:repeat(auto-fit,minmax(258px,1fr));
+}
+.rule { background:var(--surface); padding:20px; display:flex;
+  flex-direction:column; gap:11px; }
+.rule p { font-size:.86rem; max-width:none; margin:0; }
+.rule-tag {
+  font-family:"IBM Plex Mono", ui-monospace, monospace; font-size:10px;
+  letter-spacing:.15em; text-transform:uppercase; color:var(--accent);
+}
+.swatch-row { display:flex; flex-direction:column; gap:6px; margin-top:auto; padding-top:6px; }
+.swatch {
+  display:flex; align-items:center; gap:8px; font-size:.8rem; color:var(--ink-2);
+}
+.swatch .dot {
+  width:13px; height:13px; border-radius:3px; flex:none;
+  border:1px solid color-mix(in srgb, var(--ink) 22%, transparent);
+}
+.swatch code { margin-left:auto; font-size:.72rem; background:none;
+  color:var(--ink-3); padding:0; }
+.note { border-left:2px solid var(--accent); padding:2px 0 2px 18px; margin:26px 0 0; }
+.note p { font-size:.92rem; }
+footer {
+  margin-top:68px; padding-top:22px; border-top:1px solid var(--rule);
+  font-family:"IBM Plex Mono", ui-monospace, monospace; font-size:11px;
+  color:var(--ink-3); line-height:1.9;
+}
+</style>
+
+<div class="wrap">
+<header class="hero">
+  <p class="eyebrow">Auditoría de paleta · 8 pestañas × 6 temas</p>
+  <h1>Lo que el contraste medido dijo de NetPulse</h1>
+  <p class="lead">No revisé la paleta a ojo. Construí las ocho secciones de cada
+  tema, recorrí el árbol de controles real, compuse el fondo de cada texto igual
+  que lo hace el renderizador y medí el contraste sobre lo que de verdad queda
+  en pantalla.</p>
+  <div class="hero-meta">
+    <span><b>399</b> combinaciones medidas</span>
+    <span><b>5</b> acentos × 6 temas verificados</span>
+    <span><b>69</b> por debajo de su umbral</span>
+    <span><b>0</b> ahora</span>
+    <span><b>4.55:1</b> peor caso actual</span>
+  </div>
+</header>
+
+<section class="band">
+  <div class="section-head">
+    <p class="eyebrow">Hallazgos</p>
+    <h2>Cuatro defectos, uno de ellos grave</h2>
+    <p>El primero no era cuestión de gusto. Al cambiar de tema, siete de las
+    ocho secciones conservaban la paleta anterior: Flet solo alcanza la vista
+    montada, y las demás nunca llegaban a repintarse.</p>
+  </div>
+  <div class="defects">
+    <div class="defect">
+      <h4>Solo se repintaba la pestaña visible</h4>
+      <p>Con un tema claro, las secciones no montadas quedaban como islas
+      oscuras. Sus encabezados, que no tienen fondo propio, caían a texto casi
+      invisible sobre el fondo claro.</p>
+      <div class="metric"><span class="was">1.02:1</span><span class="arr">→</span><span class="now">14.79:1</span></div>
+    </div>
+    <div class="defect">
+      <h4>La tinta terciaria no llegaba a AA</h4>
+      <p>El gris azulado <code>#587087</code> se usa en etiquetas de 8 a 12 px,
+      donde el umbral es 4.5:1. Se quedaba entre 3.2 y 3.7 en los cuatro temas
+      oscuros.</p>
+      <div class="metric"><span class="was">3.49:1</span><span class="arr">→</span><span class="now">4.80:1</span></div>
+    </div>
+    <div class="defect">
+      <h4>Las tarjetas no se despegaban del fondo</h4>
+      <p>Fondo, superficie y tarjeta estaban a 1.05 de distancia, y el borde a
+      1.33 sobre la tarjeta. El resultado era una masa oscura uniforme en lugar
+      de una jerarquía de planos.</p>
+      <div class="metric"><span class="was">1.10:1</span><span class="arr">→</span><span class="now">1.24:1</span></div>
+    </div>
+    <div class="defect">
+      <h4>Dos protocolos casi del mismo color</h4>
+      <p>La insignia HTTPS estaba a 8° de la neutra OTHER y a 27° del cian de
+      TCP. En la tabla de paquetes costaba separarlas de un vistazo.</p>
+      <div class="metric"><span class="was">8°</span><span class="arr">→</span><span class="now">26°</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="band">
+  <div class="section-head">
+    <p class="eyebrow">Especímenes</p>
+    <h2>El mismo fragmento de interfaz, tema por tema</h2>
+    <p>Cada franja está pintada con los valores reales de su paleta, y la tinta
+    va a los tamaños que usa la aplicación. Las cifras de abajo son medidas, no
+    estimaciones. En los dos temas claros la paleta ya cumplía: sus fallos
+    venían del repintado incompleto, no de los colores.</p>
+  </div>
+  
+<section class="theme-block">
+  <h3 class="theme-name">NetPulse<span class="theme-kind">oscuro</span></h3>
+  <div class="pair">
+<figure class="specimen">
+  <figcaption class="spec-state">Antes</figcaption>
+  <div class="stage" style="background:#060A12">
+    <div class="stage-bar" style="background:#0A111F;border-bottom:1px solid #1A3048">
+      <span style="color:#587087;font-size:9px;letter-spacing:.09em">RESUMEN DE RED</span>
+    </div>
+    <div class="stage-card" style="background:#0D1728;border:1px solid #1A3048">
+      <span style="color:#EAF6FF;font-size:13px;font-weight:600">Conexiones principales</span>
+      <span style="color:#91A9BA;font-size:11px">14 destinos activos</span>
+      <span style="color:#587087;font-size:10px">Etiqueta terciaria a 10 px, el tamaño real</span>
+      <span class="chips"><span class="chip" style="color:#00D4FF;background:#00D4FF22;border-color:#00D4FF55">TCP</span><span class="chip" style="color:#A855F7;background:#A855F722;border-color:#A855F755">UDP</span><span class="chip" style="color:#3B82F6;background:#3B82F622;border-color:#3B82F655">HTTPS</span><span class="chip" style="color:#FFB820;background:#FFB82022;border-color:#FFB82055">HTTP</span><span class="chip" style="color:#00FF88;background:#00FF8822;border-color:#00FF8855">DNS</span><span class="chip" style="color:#FF4558;background:#FF455822;border-color:#FF455855">ICMP</span><span class="chip" style="color:#587087;background:#58708722;border-color:#58708755">OTHER</span></span>
+    </div>
+  </div>
+  <dl class="readout">
+    <div><dt>terciario / tarjeta</dt><dd class="bad">3.49<span>:1</span></dd></div>
+    <div><dt>borde / tarjeta</dt><dd class="bad">1.33<span>:1</span></dd></div>
+    <div><dt>fondo → tarjeta</dt><dd class="bad">1.10<span>:1</span></dd></div>
+  </dl>
+</figure>
+<figure class="specimen">
+  <figcaption class="spec-state">Después</figcaption>
+  <div class="stage" style="background:#05090F">
+    <div class="stage-bar" style="background:#0B1526;border-bottom:1px solid #26456A">
+      <span style="color:#808E99;font-size:9px;letter-spacing:.09em">RESUMEN DE RED</span>
+    </div>
+    <div class="stage-card" style="background:#122139;border:1px solid #26456A">
+      <span style="color:#EAF6FF;font-size:13px;font-weight:600">Conexiones principales</span>
+      <span style="color:#91A9BA;font-size:11px">14 destinos activos</span>
+      <span style="color:#808E99;font-size:10px">Etiqueta terciaria a 10 px, el tamaño real</span>
+      <span class="chips"><span class="chip" style="color:#00D4FF;background:#00D4FF22;border-color:#00D4FF55">TCP</span><span class="chip" style="color:#B268F8;background:#B268F822;border-color:#B268F855">UDP</span><span class="chip" style="color:#7082F7;background:#7082F722;border-color:#7082F755">HTTPS</span><span class="chip" style="color:#FFB820;background:#FFB82022;border-color:#FFB82055">HTTP</span><span class="chip" style="color:#00FF88;background:#00FF8822;border-color:#00FF8855">DNS</span><span class="chip" style="color:#FF4558;background:#FF455822;border-color:#FF455855">ICMP</span><span class="chip" style="color:#808E99;background:#808E9922;border-color:#808E9955">OTHER</span></span>
+    </div>
+  </div>
+  <dl class="readout">
+    <div><dt>terciario / tarjeta</dt><dd class="good">4.80<span>:1</span></dd></div>
+    <div><dt>borde / tarjeta</dt><dd class="good">1.64<span>:1</span></dd></div>
+    <div><dt>fondo → tarjeta</dt><dd class="good">1.24<span>:1</span></dd></div>
+  </dl>
+</figure></div>
+</section>
+<section class="theme-block">
+  <h3 class="theme-name">Midnight<span class="theme-kind">oscuro</span></h3>
+  <div class="pair">
+<figure class="specimen">
+  <figcaption class="spec-state">Antes</figcaption>
+  <div class="stage" style="background:#050B18">
+    <div class="stage-bar" style="background:#091427;border-bottom:1px solid #203B5B">
+      <span style="color:#587087;font-size:9px;letter-spacing:.09em">RESUMEN DE RED</span>
+    </div>
+    <div class="stage-card" style="background:#0E1C33;border:1px solid #203B5B">
+      <span style="color:#EAF6FF;font-size:13px;font-weight:600">Conexiones principales</span>
+      <span style="color:#91A9BA;font-size:11px">14 destinos activos</span>
+      <span style="color:#587087;font-size:10px">Etiqueta terciaria a 10 px, el tamaño real</span>
+      <span class="chips"><span class="chip" style="color:#00D4FF;background:#00D4FF22;border-color:#00D4FF55">TCP</span><span class="chip" style="color:#A855F7;background:#A855F722;border-color:#A855F755">UDP</span><span class="chip" style="color:#3B82F6;background:#3B82F622;border-color:#3B82F655">HTTPS</span><span class="chip" style="color:#FFB820;background:#FFB82022;border-color:#FFB82055">HTTP</span><span class="chip" style="color:#00FF88;background:#00FF8822;border-color:#00FF8855">DNS</span><span class="chip" style="color:#FF4558;background:#FF455822;border-color:#FF455855">ICMP</span><span class="chip" style="color:#587087;background:#58708722;border-color:#58708755">OTHER</span></span>
+    </div>
+  </div>
+  <dl class="readout">
+    <div><dt>terciario / tarjeta</dt><dd class="bad">3.31<span>:1</span></dd></div>
+    <div><dt>borde / tarjeta</dt><dd class="bad">1.49<span>:1</span></dd></div>
+    <div><dt>fondo → tarjeta</dt><dd class="bad">1.15<span>:1</span></dd></div>
+  </dl>
+</figure>
+<figure class="specimen">
+  <figcaption class="spec-state">Después</figcaption>
+  <div class="stage" style="background:#050B18">
+    <div class="stage-bar" style="background:#0A1830;border-bottom:1px solid #2C4E76">
+      <span style="color:#808E99;font-size:9px;letter-spacing:.09em">RESUMEN DE RED</span>
+    </div>
+    <div class="stage-card" style="background:#12243F;border:1px solid #2C4E76">
+      <span style="color:#EAF6FF;font-size:13px;font-weight:600">Conexiones principales</span>
+      <span style="color:#91A9BA;font-size:11px">14 destinos activos</span>
+      <span style="color:#808E99;font-size:10px">Etiqueta terciaria a 10 px, el tamaño real</span>
+      <span class="chips"><span class="chip" style="color:#00D4FF;background:#00D4FF22;border-color:#00D4FF55">TCP</span><span class="chip" style="color:#B268F8;background:#B268F822;border-color:#B268F855">UDP</span><span class="chip" style="color:#7082F7;background:#7082F722;border-color:#7082F755">HTTPS</span><span class="chip" style="color:#FFB820;background:#FFB82022;border-color:#FFB82055">HTTP</span><span class="chip" style="color:#00FF88;background:#00FF8822;border-color:#00FF8855">DNS</span><span class="chip" style="color:#FF4558;background:#FF455822;border-color:#FF455855">ICMP</span><span class="chip" style="color:#808E99;background:#808E9922;border-color:#808E9955">OTHER</span></span>
+    </div>
+  </div>
+  <dl class="readout">
+    <div><dt>terciario / tarjeta</dt><dd class="good">4.63<span>:1</span></dd></div>
+    <div><dt>borde / tarjeta</dt><dd class="good">1.82<span>:1</span></dd></div>
+    <div><dt>fondo → tarjeta</dt><dd class="good">1.26<span>:1</span></dd></div>
+  </dl>
+</figure></div>
+</section>
+<section class="theme-block">
+  <h3 class="theme-name">Graphite<span class="theme-kind">oscuro</span></h3>
+  <div class="pair">
+<figure class="specimen">
+  <figcaption class="spec-state">Antes</figcaption>
+  <div class="stage" style="background:#0D0F13">
+    <div class="stage-bar" style="background:#14171D;border-bottom:1px solid #343B48">
+      <span style="color:#587087;font-size:9px;letter-spacing:.09em">RESUMEN DE RED</span>
+    </div>
+    <div class="stage-card" style="background:#1B1F27;border:1px solid #343B48">
+      <span style="color:#EAF6FF;font-size:13px;font-weight:600">Conexiones principales</span>
+      <span style="color:#91A9BA;font-size:11px">14 destinos activos</span>
+      <span style="color:#587087;font-size:10px">Etiqueta terciaria a 10 px, el tamaño real</span>
+      <span class="chips"><span class="chip" style="color:#00D4FF;background:#00D4FF22;border-color:#00D4FF55">TCP</span><span class="chip" style="color:#A855F7;background:#A855F722;border-color:#A855F755">UDP</span><span class="chip" style="color:#3B82F6;background:#3B82F622;border-color:#3B82F655">HTTPS</span><span class="chip" style="color:#FFB820;background:#FFB82022;border-color:#FFB82055">HTTP</span><span class="chip" style="color:#00FF88;background:#00FF8822;border-color:#00FF8855">DNS</span><span class="chip" style="color:#FF4558;background:#FF455822;border-color:#FF455855">ICMP</span><span class="chip" style="color:#587087;background:#58708722;border-color:#58708755">OTHER</span></span>
+    </div>
+  </div>
+  <dl class="readout">
+    <div><dt>terciario / tarjeta</dt><dd class="bad">3.21<span>:1</span></dd></div>
+    <div><dt>borde / tarjeta</dt><dd class="bad">1.47<span>:1</span></dd></div>
+    <div><dt>fondo → tarjeta</dt><dd class="bad">1.16<span>:1</span></dd></div>
+  </dl>
+</figure>
+<figure class="specimen">
+  <figcaption class="spec-state">Después</figcaption>
+  <div class="stage" style="background:#0B0D11">
+    <div class="stage-bar" style="background:#161A21;border-bottom:1px solid #414A5A">
+      <span style="color:#808E99;font-size:9px;letter-spacing:.09em">RESUMEN DE RED</span>
+    </div>
+    <div class="stage-card" style="background:#20252F;border:1px solid #414A5A">
+      <span style="color:#EAF6FF;font-size:13px;font-weight:600">Conexiones principales</span>
+      <span style="color:#91A9BA;font-size:11px">14 destinos activos</span>
+      <span style="color:#808E99;font-size:10px">Etiqueta terciaria a 10 px, el tamaño real</span>
+      <span class="chips"><span class="chip" style="color:#00D4FF;background:#00D4FF22;border-color:#00D4FF55">TCP</span><span class="chip" style="color:#B268F8;background:#B268F822;border-color:#B268F855">UDP</span><span class="chip" style="color:#7082F7;background:#7082F722;border-color:#7082F755">HTTPS</span><span class="chip" style="color:#FFB820;background:#FFB82022;border-color:#FFB82055">HTTP</span><span class="chip" style="color:#00FF88;background:#00FF8822;border-color:#00FF8855">DNS</span><span class="chip" style="color:#FF4558;background:#FF455822;border-color:#FF455855">ICMP</span><span class="chip" style="color:#808E99;background:#808E9922;border-color:#808E9955">OTHER</span></span>
+    </div>
+  </div>
+  <dl class="readout">
+    <div><dt>terciario / tarjeta</dt><dd class="good">4.57<span>:1</span></dd></div>
+    <div><dt>borde / tarjeta</dt><dd class="good">1.72<span>:1</span></dd></div>
+    <div><dt>fondo → tarjeta</dt><dd class="good">1.27<span>:1</span></dd></div>
+  </dl>
+</figure></div>
+</section>
+<section class="theme-block">
+  <h3 class="theme-name">Pure black<span class="theme-kind">oscuro</span></h3>
+  <div class="pair">
+<figure class="specimen">
+  <figcaption class="spec-state">Antes</figcaption>
+  <div class="stage" style="background:#000000">
+    <div class="stage-bar" style="background:#07090C;border-bottom:1px solid #252A33">
+      <span style="color:#587087;font-size:9px;letter-spacing:.09em">RESUMEN DE RED</span>
+    </div>
+    <div class="stage-card" style="background:#0E1116;border:1px solid #252A33">
+      <span style="color:#EAF6FF;font-size:13px;font-weight:600">Conexiones principales</span>
+      <span style="color:#91A9BA;font-size:11px">14 destinos activos</span>
+      <span style="color:#587087;font-size:10px">Etiqueta terciaria a 10 px, el tamaño real</span>
+      <span class="chips"><span class="chip" style="color:#00D4FF;background:#00D4FF22;border-color:#00D4FF55">TCP</span><span class="chip" style="color:#A855F7;background:#A855F722;border-color:#A855F755">UDP</span><span class="chip" style="color:#3B82F6;background:#3B82F622;border-color:#3B82F655">HTTPS</span><span class="chip" style="color:#FFB820;background:#FFB82022;border-color:#FFB82055">HTTP</span><span class="chip" style="color:#00FF88;background:#00FF8822;border-color:#00FF8855">DNS</span><span class="chip" style="color:#FF4558;background:#FF455822;border-color:#FF455855">ICMP</span><span class="chip" style="color:#587087;background:#58708722;border-color:#58708755">OTHER</span></span>
+    </div>
+  </div>
+  <dl class="readout">
+    <div><dt>terciario / tarjeta</dt><dd class="bad">3.68<span>:1</span></dd></div>
+    <div><dt>borde / tarjeta</dt><dd class="bad">1.31<span>:1</span></dd></div>
+    <div><dt>fondo → tarjeta</dt><dd class="bad">1.11<span>:1</span></dd></div>
+  </dl>
+</figure>
+<figure class="specimen">
+  <figcaption class="spec-state">Después</figcaption>
+  <div class="stage" style="background:#000000">
+    <div class="stage-bar" style="background:#0D1017;border-bottom:1px solid #363E4D">
+      <span style="color:#808E99;font-size:9px;letter-spacing:.09em">RESUMEN DE RED</span>
+    </div>
+    <div class="stage-card" style="background:#171D28;border:1px solid #363E4D">
+      <span style="color:#EAF6FF;font-size:13px;font-weight:600">Conexiones principales</span>
+      <span style="color:#91A9BA;font-size:11px">14 destinos activos</span>
+      <span style="color:#808E99;font-size:10px">Etiqueta terciaria a 10 px, el tamaño real</span>
+      <span class="chips"><span class="chip" style="color:#00D4FF;background:#00D4FF22;border-color:#00D4FF55">TCP</span><span class="chip" style="color:#B268F8;background:#B268F822;border-color:#B268F855">UDP</span><span class="chip" style="color:#7082F7;background:#7082F722;border-color:#7082F755">HTTPS</span><span class="chip" style="color:#FFB820;background:#FFB82022;border-color:#FFB82055">HTTP</span><span class="chip" style="color:#00FF88;background:#00FF8822;border-color:#00FF8855">DNS</span><span class="chip" style="color:#FF4558;background:#FF455822;border-color:#FF455855">ICMP</span><span class="chip" style="color:#808E99;background:#808E9922;border-color:#808E9955">OTHER</span></span>
+    </div>
+  </div>
+  <dl class="readout">
+    <div><dt>terciario / tarjeta</dt><dd class="good">5.03<span>:1</span></dd></div>
+    <div><dt>borde / tarjeta</dt><dd class="good">1.57<span>:1</span></dd></div>
+    <div><dt>fondo → tarjeta</dt><dd class="good">1.24<span>:1</span></dd></div>
+  </dl>
+</figure></div>
+</section>
+<section class="theme-block">
+  <h3 class="theme-name">Daylight<span class="theme-kind">claro</span></h3>
+  <div class="pair">
+<figure class="specimen">
+  <figcaption class="spec-state">Antes</figcaption>
+  <div class="stage" style="background:#EEF3F9">
+    <div class="stage-bar" style="background:#F7FAFD;border-bottom:1px solid #C9D6E4">
+      <span style="color:#5E7186;font-size:9px;letter-spacing:.09em">RESUMEN DE RED</span>
+    </div>
+    <div class="stage-card" style="background:#FFFFFF;border:1px solid #C9D6E4">
+      <span style="color:#0B1B2B;font-size:13px;font-weight:600">Conexiones principales</span>
+      <span style="color:#3C536B;font-size:11px">14 destinos activos</span>
+      <span style="color:#5E7186;font-size:10px">Etiqueta terciaria a 10 px, el tamaño real</span>
+      <span class="chips"><span class="chip" style="color:#00728F;background:#00728F22;border-color:#00728F55">TCP</span><span class="chip" style="color:#7127C4;background:#7127C422;border-color:#7127C455">UDP</span><span class="chip" style="color:#1F5FD0;background:#1F5FD022;border-color:#1F5FD055">HTTPS</span><span class="chip" style="color:#9A6200;background:#9A620022;border-color:#9A620055">HTTP</span><span class="chip" style="color:#0F7A45;background:#0F7A4522;border-color:#0F7A4555">DNS</span><span class="chip" style="color:#C42239;background:#C4223922;border-color:#C4223955">ICMP</span><span class="chip" style="color:#5E7186;background:#5E718622;border-color:#5E718655">OTHER</span></span>
+    </div>
+  </div>
+  <dl class="readout">
+    <div><dt>terciario / tarjeta</dt><dd class="good">5.02<span>:1</span></dd></div>
+    <div><dt>borde / tarjeta</dt><dd class="bad">1.48<span>:1</span></dd></div>
+    <div><dt>fondo → tarjeta</dt><dd class="bad">1.12<span>:1</span></dd></div>
+  </dl>
+</figure>
+<figure class="specimen">
+  <figcaption class="spec-state">Después</figcaption>
+  <div class="stage" style="background:#E3EAF3">
+    <div class="stage-bar" style="background:#F3F7FC;border-bottom:1px solid #AABCD1">
+      <span style="color:#5E6973;font-size:9px;letter-spacing:.09em">RESUMEN DE RED</span>
+    </div>
+    <div class="stage-card" style="background:#FFFFFF;border:1px solid #AABCD1">
+      <span style="color:#102943;font-size:13px;font-weight:600">Conexiones principales</span>
+      <span style="color:#3F5770;font-size:11px">14 destinos activos</span>
+      <span style="color:#5E6973;font-size:10px">Etiqueta terciaria a 10 px, el tamaño real</span>
+      <span class="chips"><span class="chip" style="color:#007188;background:#00718822;border-color:#00718855">TCP</span><span class="chip" style="color:#8C3AD9;background:#8C3AD922;border-color:#8C3AD955">UDP</span><span class="chip" style="color:#4358E0;background:#4358E022;border-color:#4358E055">HTTPS</span><span class="chip" style="color:#8B5F00;background:#8B5F0022;border-color:#8B5F0055">HTTP</span><span class="chip" style="color:#007740;background:#00774022;border-color:#00774055">DNS</span><span class="chip" style="color:#C82131;background:#C8213122;border-color:#C8213155">ICMP</span><span class="chip" style="color:#5E6973;background:#5E697322;border-color:#5E697355">OTHER</span></span>
+    </div>
+  </div>
+  <dl class="readout">
+    <div><dt>terciario / tarjeta</dt><dd class="good">5.61<span>:1</span></dd></div>
+    <div><dt>borde / tarjeta</dt><dd class="good">1.94<span>:1</span></dd></div>
+    <div><dt>fondo → tarjeta</dt><dd class="good">1.21<span>:1</span></dd></div>
+  </dl>
+</figure></div>
+</section>
+<section class="theme-block">
+  <h3 class="theme-name">Paper<span class="theme-kind">claro</span></h3>
+  <div class="pair">
+<figure class="specimen">
+  <figcaption class="spec-state">Antes</figcaption>
+  <div class="stage" style="background:#F6F3EC">
+    <div class="stage-bar" style="background:#FFFDF8;border-bottom:1px solid #D9D2C4">
+      <span style="color:#5E7186;font-size:9px;letter-spacing:.09em">RESUMEN DE RED</span>
+    </div>
+    <div class="stage-card" style="background:#FFFFFF;border:1px solid #D9D2C4">
+      <span style="color:#0B1B2B;font-size:13px;font-weight:600">Conexiones principales</span>
+      <span style="color:#3C536B;font-size:11px">14 destinos activos</span>
+      <span style="color:#5E7186;font-size:10px">Etiqueta terciaria a 10 px, el tamaño real</span>
+      <span class="chips"><span class="chip" style="color:#00728F;background:#00728F22;border-color:#00728F55">TCP</span><span class="chip" style="color:#7127C4;background:#7127C422;border-color:#7127C455">UDP</span><span class="chip" style="color:#1F5FD0;background:#1F5FD022;border-color:#1F5FD055">HTTPS</span><span class="chip" style="color:#9A6200;background:#9A620022;border-color:#9A620055">HTTP</span><span class="chip" style="color:#0F7A45;background:#0F7A4522;border-color:#0F7A4555">DNS</span><span class="chip" style="color:#C42239;background:#C4223922;border-color:#C4223955">ICMP</span><span class="chip" style="color:#5E7186;background:#5E718622;border-color:#5E718655">OTHER</span></span>
+    </div>
+  </div>
+  <dl class="readout">
+    <div><dt>terciario / tarjeta</dt><dd class="good">5.02<span>:1</span></dd></div>
+    <div><dt>borde / tarjeta</dt><dd class="good">1.50<span>:1</span></dd></div>
+    <div><dt>fondo → tarjeta</dt><dd class="bad">1.11<span>:1</span></dd></div>
+  </dl>
+</figure>
+<figure class="specimen">
+  <figcaption class="spec-state">Después</figcaption>
+  <div class="stage" style="background:#EDE7DA">
+    <div class="stage-bar" style="background:#FAF7F1;border-bottom:1px solid #C2B7A2">
+      <span style="color:#5E6973;font-size:9px;letter-spacing:.09em">RESUMEN DE RED</span>
+    </div>
+    <div class="stage-card" style="background:#FFFFFF;border:1px solid #C2B7A2">
+      <span style="color:#102943;font-size:13px;font-weight:600">Conexiones principales</span>
+      <span style="color:#3F5770;font-size:11px">14 destinos activos</span>
+      <span style="color:#5E6973;font-size:10px">Etiqueta terciaria a 10 px, el tamaño real</span>
+      <span class="chips"><span class="chip" style="color:#007188;background:#00718822;border-color:#00718855">TCP</span><span class="chip" style="color:#8C3AD9;background:#8C3AD922;border-color:#8C3AD955">UDP</span><span class="chip" style="color:#4358E0;background:#4358E022;border-color:#4358E055">HTTPS</span><span class="chip" style="color:#8B5F00;background:#8B5F0022;border-color:#8B5F0055">HTTP</span><span class="chip" style="color:#007740;background:#00774022;border-color:#00774055">DNS</span><span class="chip" style="color:#C82131;background:#C8213122;border-color:#C8213155">ICMP</span><span class="chip" style="color:#5E6973;background:#5E697322;border-color:#5E697355">OTHER</span></span>
+    </div>
+  </div>
+  <dl class="readout">
+    <div><dt>terciario / tarjeta</dt><dd class="good">5.61<span>:1</span></dd></div>
+    <div><dt>borde / tarjeta</dt><dd class="good">1.98<span>:1</span></dd></div>
+    <div><dt>fondo → tarjeta</dt><dd class="good">1.23<span>:1</span></dd></div>
+  </dl>
+</figure></div>
+</section>
+</section>
+
+<section class="band">
+  <div class="section-head">
+    <p class="eyebrow">Insignias de protocolo</p>
+    <h2>Separación en la rueda de tonos</h2>
+    <p>El ángulo es el tono y la distancia al centro es la saturación. Mover el
+    azul de HTTPS de 217° a 232° y bajar la neutra a un gris del 11 % de
+    saturación despeja el racimo azul en el que caían tres insignias.</p>
+  </div>
+  <div class="wheels">
+    <div class="wheel-card">
+      <span class="spec-state">Antes · tema oscuro</span>
+      <svg viewBox="0 0 200 200" role="img" aria-label="Rueda de tonos de las insignias de protocolo, before"><circle cx="100" cy="100" r="32" fill="none" stroke="var(--rule)" stroke-width="1" stroke-dasharray="2 5"></circle><circle cx="100" cy="100" r="55" fill="none" stroke="var(--rule)" stroke-width="1" stroke-dasharray="2 5"></circle><circle cx="100" cy="100" r="78" fill="none" stroke="var(--rule)" stroke-width="1" stroke-dasharray="2 5"></circle><circle cx="86.5" cy="176.8" r="9.5" fill="#00D4FF" stroke="var(--surface)" stroke-width="2"></circle><text x="86.5" y="197.8" class="wheel-label">TCP</text><circle cx="26.2" cy="98.7" r="9.5" fill="#A855F7" stroke="var(--surface)" stroke-width="2"></circle><text x="26.2" y="119.7" class="wheel-label">UDP</text><circle cx="55.5" cy="159.0" r="9.5" fill="#3B82F6" stroke="var(--surface)" stroke-width="2"></circle><text x="55.5" y="180.0" class="wheel-label">HTTPS</text><circle cx="151.2" cy="41.1" r="9.5" fill="#FFB820" stroke="var(--surface)" stroke-width="2"></circle><text x="151.2" y="62.1" class="wheel-label">HTTP</text><circle cx="136.6" cy="168.9" r="9.5" fill="#00FF88" stroke="var(--surface)" stroke-width="2"></circle><text x="136.6" y="189.9" class="wheel-label">DNS</text><circle cx="91.8" cy="22.4" r="9.5" fill="#FF4558" stroke="var(--surface)" stroke-width="2"></circle><text x="91.8" y="43.4" class="wheel-label">ICMP</text><circle cx="79.8" cy="136.4" r="9.5" fill="#587087" stroke="var(--surface)" stroke-width="2"></circle><text x="79.8" y="157.4" class="wheel-label">OTHER</text></svg>
+      <div class="table-scroll"><table>
+        <thead><tr><th>Pareja</th><th>Δtono</th><th>Contraste</th><th>Δsat</th><th>Lectura</th></tr></thead>
+        <tbody><tr class=""><th scope="row">HTTPS · OTHER</th><td>8°</td><td>1.40:1</td><td>70</td><td class="verdict">distinguibles</td></tr><tr class=""><th scope="row">TCP · OTHER</th><td>19°</td><td>2.91:1</td><td>79</td><td class="verdict">distinguibles</td></tr><tr class=""><th scope="row">TCP · HTTPS</th><td>27°</td><td>2.08:1</td><td>9</td><td class="verdict">distinguibles</td></tr><tr class=""><th scope="row">TCP · DNS</th><td>38°</td><td>1.32:1</td><td>0</td><td class="verdict">distinguibles</td></tr></tbody>
+      </table></div>
+    </div>
+    <div class="wheel-card">
+      <span class="spec-state">Después · tema oscuro</span>
+      <svg viewBox="0 0 200 200" role="img" aria-label="Rueda de tonos de las insignias de protocolo, after"><circle cx="100" cy="100" r="32" fill="none" stroke="var(--rule)" stroke-width="1" stroke-dasharray="2 5"></circle><circle cx="100" cy="100" r="55" fill="none" stroke="var(--rule)" stroke-width="1" stroke-dasharray="2 5"></circle><circle cx="100" cy="100" r="78" fill="none" stroke="var(--rule)" stroke-width="1" stroke-dasharray="2 5"></circle><circle cx="86.5" cy="176.8" r="9.5" fill="#00D4FF" stroke="var(--surface)" stroke-width="2"></circle><text x="86.5" y="197.8" class="wheel-label">TCP</text><circle cx="26.2" cy="98.7" r="9.5" fill="#B268F8" stroke="var(--surface)" stroke-width="2"></circle><text x="26.2" y="119.7" class="wheel-label">UDP</text><circle cx="42.5" cy="144.9" r="9.5" fill="#7082F7" stroke="var(--surface)" stroke-width="2"></circle><text x="42.5" y="165.9" class="wheel-label">HTTPS</text><circle cx="151.2" cy="41.1" r="9.5" fill="#FFB820" stroke="var(--surface)" stroke-width="2"></circle><text x="151.2" y="62.1" class="wheel-label">HTTP</text><circle cx="136.6" cy="168.9" r="9.5" fill="#00FF88" stroke="var(--surface)" stroke-width="2"></circle><text x="136.6" y="189.9" class="wheel-label">DNS</text><circle cx="91.8" cy="22.4" r="9.5" fill="#FF4558" stroke="var(--surface)" stroke-width="2"></circle><text x="91.8" y="43.4" class="wheel-label">ICMP</text><circle cx="83.8" cy="133.3" r="9.5" fill="#808E99" stroke="var(--surface)" stroke-width="2"></circle><text x="83.8" y="154.3" class="wheel-label">OTHER</text></svg>
+      <div class="table-scroll"><table>
+        <thead><tr><th>Pareja</th><th>Δtono</th><th>Contraste</th><th>Δsat</th><th>Lectura</th></tr></thead>
+        <tbody><tr class=""><th scope="row">TCP · OTHER</th><td>16°</td><td>1.90:1</td><td>89</td><td class="verdict">distinguibles</td></tr><tr class=""><th scope="row">HTTPS · OTHER</th><td>26°</td><td>1.00:1</td><td>78</td><td class="verdict">distinguibles</td></tr><tr class=""><th scope="row">TCP · DNS</th><td>38°</td><td>1.32:1</td><td>0</td><td class="verdict">distinguibles</td></tr><tr class=""><th scope="row">UDP · HTTPS</th><td>39°</td><td>1.00:1</td><td>2</td><td class="verdict">distinguibles</td></tr></tbody>
+      </table></div>
+    </div>
+  </div>
+  <div class="note">
+    <p>Dos insignias solo se confunden si coinciden en las tres dimensiones a la
+    vez. TCP y DNS comparten luminancia, pero están a 38° y ambas saturadas al
+    100 %: cian y verde se distinguen sin esfuerzo. HTTPS y OTHER comparten
+    luminancia, pero 78 puntos de saturación las separan: una es vívida, la otra
+    es gris.</p>
+  </div>
+</section>
+
+<section class="band">
+  <div class="section-head">
+    <p class="eyebrow">Disciplina</p>
+    <h2>El color se gana, no se reparte</h2>
+    <p>La segunda ronda encontró algo peor que un contraste bajo: los cinco
+    acentos eran literalmente los mismos valores que los colores semánticos.
+    Como el repintado funcionaba por coincidencia de color, elegir violeta
+    teñía también las insignias TCP y la serie del gráfico — y lo que se
+    dibujaba después volvía a cian. Quedaban dos colores para el mismo dato en
+    la misma pantalla.</p>
+  </div>
+  <div class="rules">
+    <div class="rule">
+      <span class="rule-tag">Cromo</span>
+      <p>El acento pinta la marca, el raíl, los encabezados y el foco. Tiene
+      valores propios y se aplica a controles registrados, no por coincidencia
+      de color. Ya no arrastra ningún dato.</p>
+      <div class="swatch-row"><span class="swatch"><span class="dot" style="background:#00D4FF"></span>cian<code>#00D4FF</code></span><span class="swatch"><span class="dot" style="background:#448AFA"></span>azul<code>#448AFA</code></span><span class="swatch"><span class="dot" style="background:#C361ED"></span>violeta<code>#C361ED</code></span><span class="swatch"><span class="dot" style="background:#F542AA"></span>magenta<code>#F542AA</code></span><span class="swatch"><span class="dot" style="background:#748FA6"></span>pizarra<code>#748FA6</code></span></div>
+    </div>
+    <div class="rule">
+      <span class="rule-tag">Estado</span>
+      <p>Verde, ámbar y rojo significan conseguido, atención y peligro. Se
+      retiran del selector de acentos: un raíl verde se lee como «todo va
+      bien» y uno ámbar como un aviso permanente.</p>
+      <div class="swatch-row"><span class="swatch"><span class="dot" style="background:#00FF88"></span>conseguido<code>#00FF88</code></span><span class="swatch"><span class="dot" style="background:#FFB820"></span>atención<code>#FFB820</code></span><span class="swatch"><span class="dot" style="background:#FF4558"></span>peligro<code>#FF4558</code></span></div>
+    </div>
+    <div class="rule">
+      <span class="rule-tag">Dato</span>
+      <p>Los tonos de protocolo y de serie codifican categoría y no los toca
+      nadie más. El marco de las tarjetas pasa a ser uniforme: antes cada
+      tarjeta llevaba su propio color de borde y el ojo leía el marco antes que
+      la cifra.</p>
+    </div>
+  </div>
+  <div class="note">
+    <p>El caso benigno deja de ser verde. «Riesgo bajo» pintaba de verde cada
+    fila, así que un equipo con noventa puertos sin incidencia producía noventa
+    filas verdes y los dos que necesitaban atención competían con ellas. Ahora
+    el estado tranquilo es neutro y el verde queda para algo que alguien
+    consiguió: un hallazgo resuelto, un puerto cerrado, una comprobación
+    superada.</p>
+  </div>
+</section>
+
+<section class="band">
+  <div class="section-head">
+    <p class="eyebrow">Sin tocar</p>
+    <h2>Lo que decidí no cambiar</h2>
+    <p>El cian, el verde, el ámbar y el rojo son la identidad de la aplicación y
+    ya superaban todos los umbrales. En una versión intermedia los sustituí por
+    variantes más apagadas: el resultado perdía carácter sin ganar legibilidad,
+    así que lo revertí. Solo se movieron los dos que fallaban.</p>
+  </div>
+  <div class="table-scroll"><table>
+    <thead><tr><th>Rol</th><th>Antes</th><th>Después</th><th>Cambio</th></tr></thead>
+    <tbody>
+      <tr><th scope="row">Tinta terciaria</th><td>#587087</td><td>#808E99</td><td>saturación 21 % → 11 %</td></tr>
+      <tr><th scope="row">Azul · HTTPS</th><td>#3B82F6</td><td>#7082F7</td><td>tono 217° → 232°</td></tr>
+      <tr><th scope="row">Púrpura · UDP</th><td>#A855F7</td><td>#B268F8</td><td>solo luminancia</td></tr>
+      <tr><th scope="row">Cian · TCP</th><td>#00D4FF</td><td>#00D4FF</td><td>sin cambios</td></tr>
+      <tr><th scope="row">Verde · DNS</th><td>#00FF88</td><td>#00FF88</td><td>sin cambios</td></tr>
+      <tr><th scope="row">Ámbar · HTTP</th><td>#FFB820</td><td>#FFB820</td><td>sin cambios</td></tr>
+      <tr><th scope="row">Rojo · ICMP</th><td>#FF4558</td><td>#FF4558</td><td>sin cambios</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note">
+    <p>Quien tuviera elegido verde, ámbar o púrpura no pierde su preferencia:
+    se traslada a cian, magenta y violeta respectivamente la primera vez que se
+    lee el archivo de ajustes.</p>
+  </div>
+</section>
+
+<footer>
+  Medido sobre los árboles de control reales · el contrato queda fijado en
+  tests/test_colorimetry.py · 155 pruebas en verde
+</footer>
+</div>
