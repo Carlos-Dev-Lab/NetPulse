@@ -9,7 +9,11 @@ import flet as ft
 
 from netpulse.config import load_appearance, save_appearance
 from netpulse.domain.state import AppState
-from netpulse.presentation.theme import appearance_palette, recolor_tree
+from netpulse.config import ACCENTS
+from netpulse.presentation.theme import (
+    appearance_palette, apply_accent, clear_accent_registry, recolor_tree,
+    view_heading,
+)
 from netpulse.presentation.views import SettingsView
 
 
@@ -45,9 +49,9 @@ class AppearanceTests(unittest.TestCase):
             settings = Path(directory) / "settings.json"
             settings.write_text('{"language": "es"}', encoding="utf-8")
             with patch("netpulse.config.DEFAULT_SETTINGS_PATH", settings):
-                save_appearance("graphite", "purple", "compact")
+                save_appearance("graphite", "violet", "compact")
                 self.assertEqual(load_appearance(), {
-                    "theme": "graphite", "accent": "purple", "density": "compact",
+                    "theme": "graphite", "accent": "violet", "density": "compact",
                 })
                 data = json.loads(settings.read_text(encoding="utf-8"))
                 self.assertEqual(data["language"], "es")
@@ -57,22 +61,61 @@ class AppearanceTests(unittest.TestCase):
                     "theme": "netpulse", "accent": "cyan", "density": "standard",
                 })
 
-    def test_recolor_tree_updates_backgrounds_and_accent(self):
+    def test_recolor_tree_updates_surfaces_but_never_the_accent(self):
+        """Chrome follows the accent through the registry, not by colour match.
+
+        The accent shares its value with a semantic role, so swapping it by
+        colour also repainted every TCP chip and traffic series - and anything
+        drawn afterwards came back in the original colour.
+        """
         old = appearance_palette("netpulse", "cyan")
-        new = appearance_palette("black", "amber")
-        icon = ft.Icon(ft.Icons.PALETTE, color=old["accent"])
-        control = ft.Container(icon, bgcolor=old["card"])
+        new = appearance_palette("black", "magenta")
+        data_chip = ft.Text("TCP", color=old["cyan"])
+        control = ft.Container(data_chip, bgcolor=old["card"])
 
         recolor_tree(control, old, new)
 
         self.assertEqual(control.bgcolor, new["card"])
-        self.assertEqual(icon.color, new["accent"])
+        self.assertEqual(data_chip.color, new["cyan"],
+                         "a data colour must not be dragged along by the accent")
+
+    def test_registered_chrome_follows_the_accent(self):
+        clear_accent_registry()
+        self.addCleanup(clear_accent_registry)
+        heading = view_heading("Overview", "sub", ft.Icons.HUB_ROUNDED)
+        plate = heading.content.controls[0]
+        rule = heading.content.controls[2]
+
+        apply_accent(appearance_palette("netpulse", "magenta")["accent"])
+
+        magenta = appearance_palette("netpulse", "magenta")["accent"]
+        self.assertEqual(plate.content.color, magenta)
+        self.assertEqual(rule.bgcolor, magenta)
+        self.assertTrue(plate.bgcolor.startswith(magenta),
+                        "the plate keeps its translucency")
+
+    def test_retired_accents_map_onto_a_surviving_choice(self):
+        for legacy, survivor in (("green", "cyan"), ("amber", "magenta"),
+                                 ("purple", "violet")):
+            expected = appearance_palette("netpulse", survivor)["accent"]
+            self.assertEqual(appearance_palette("netpulse", legacy)["accent"],
+                             expected, legacy)
+
+    def test_no_accent_collides_with_a_status_colour(self):
+        """A green rail would read as success; an amber one as a warning."""
+        for theme in ("netpulse", "daylight"):
+            for accent in ACCENTS:
+                palette = appearance_palette(theme, accent)
+                for role in ("green", "amber", "red"):
+                    self.assertNotEqual(
+                        palette["accent"].upper(), palette[role].upper(),
+                        f"{theme}/{accent} reuses the {role} status colour")
 
     def test_settings_apply_button_emits_selected_appearance(self):
         changes = []
         view = SettingsView(
             AppState(), appearance={
-                "theme": "midnight", "accent": "green", "density": "comfortable",
+                "theme": "midnight", "accent": "violet", "density": "comfortable",
             }, on_appearance_change=lambda *values: changes.append(values),
         )
         root = view.build()
@@ -81,7 +124,7 @@ class AppearanceTests(unittest.TestCase):
 
         apply_button.on_click(None)
 
-        self.assertEqual(changes, [("midnight", "green", "comfortable")])
+        self.assertEqual(changes, [("midnight", "violet", "comfortable")])
 
     def test_settings_interface_change_updates_state_and_notifies_header(self):
         state = AppState()

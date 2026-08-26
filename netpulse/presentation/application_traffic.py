@@ -7,6 +7,7 @@ import flet as ft
 
 from netpulse.domain.state import AppState
 from netpulse.services.ip_info import geo_cache
+from .dialogs import close_dialog, open_dialog
 from .i18n import tr, translate_tree, get_language
 from .theme import (
     AMBER, BLUE, BORDER, CARD, CYAN, DIM, GREEN, MUTED, PURPLE, RED,
@@ -656,11 +657,7 @@ class ProcessView:
         )
 
         def close(e=None):
-            try:
-                page.pop_dialog()
-            except AttributeError:
-                page.dialog.open = False
-            page.update()
+            close_dialog(page)
 
         dialog = ft.AlertDialog(
             modal=True,
@@ -672,12 +669,7 @@ class ProcessView:
             shape=ft.RoundedRectangleBorder(radius=14),
         )
         translate_tree(dialog, get_language())
-        if hasattr(page, "show_dialog"):
-            page.show_dialog(dialog)
-        else:
-            page.dialog = dialog
-            dialog.open = True
-            page.update()
+        open_dialog(page, dialog)
 
     @staticmethod
     def _detail_metric(label: str, value: str, color: str):

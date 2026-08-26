@@ -6,8 +6,42 @@ from typing import Optional
 import flet as ft
 import flet.canvas as cv
 
-from .theme import AMBER, BG, BORDER, CARD, CYAN, DIM, GREEN, MUTED, PURPLE, RED, TEXT
+from .theme import (
+    AMBER, BG, BORDER, CARD, CYAN, DIM, GREEN, MUTED, PURPLE, RED, TEXT,
+)
 from .i18n import tr
+
+# Canvas shapes are rebuilt from Python on every repaint, so they cannot rely on
+# the recoloured control tree. This module-level palette is what the drawing
+# code reads; ``apply_palette`` swaps it when the appearance changes.
+_PALETTE = {
+    "bg": BG, "surface": BG, "card": CARD, "border": BORDER,
+    "text": TEXT, "dim": DIM, "muted": MUTED,
+}
+
+
+def apply_palette(palette: dict) -> None:
+    """Point chart drawing at a new appearance palette."""
+    for role in _PALETTE:
+        value = palette.get(role)
+        if isinstance(value, str) and value:
+            _PALETTE[role] = value
+
+
+def active_palette() -> dict:
+    """Expose the palette the canvases currently draw with."""
+    return dict(_PALETTE)
+
+
+def _role(name: str) -> str:
+    return _PALETTE[name]
+
+
+def _remap(color: str, mapping: dict) -> str:
+    """Translate one series colour through an old-hex to new-hex mapping."""
+    if not isinstance(color, str):
+        return color
+    return mapping.get(color.upper(), color)
 
 
 def _hex_to_rgb(h: str):
@@ -53,6 +87,13 @@ class LineChartCanvas:
         if self._canvas:
             self._canvas.shapes = self._build_shapes()
 
+    def recolor(self, mapping: dict) -> None:
+        """Move both series onto the new appearance palette."""
+        self._color_a = _remap(self._color_a, mapping)
+        self._color_b = _remap(self._color_b, mapping)
+        if self._canvas:
+            self._canvas.shapes = self._build_shapes()
+
     def resize(self, width: float, height: float) -> None:
         """Resize both the container and the canvas coordinate system."""
         self.W = max(220.0, float(width))
@@ -81,13 +122,13 @@ class LineChartCanvas:
             y = pt + ch * (1 - k / 4)
             shapes.append(cv.Line(
                 pl, y, W - pr, y,
-                paint=ft.Paint(color=_rgba(BORDER, 0.6), stroke_width=0.5),
+                paint=ft.Paint(color=_rgba(_role("border"), 0.6), stroke_width=0.5),
             ))
             v_label = max_v * k / 4
             shapes.append(cv.Text(
                 x=2, y=y - 7,
                 value=f"{v_label:.0f}" if max_v > 10 else f"{v_label:.1f}",
-                style=ft.TextStyle(size=9, color=MUTED),
+                style=ft.TextStyle(size=9, color=_role("muted")),
             ))
 
         # Area fill + line for series A
@@ -148,15 +189,15 @@ class LineChartCanvas:
 
         # Axes
         shapes.append(cv.Line(pl, pt, pl, pt + ch,
-                              paint=ft.Paint(color=BORDER, stroke_width=1)))
+                              paint=ft.Paint(color=_role("border"), stroke_width=1)))
         shapes.append(cv.Line(pl, pt + ch, W - pr, pt + ch,
-                              paint=ft.Paint(color=BORDER, stroke_width=1)))
+                              paint=ft.Paint(color=_role("border"), stroke_width=1)))
 
         if not any(self._data_a) and not any(self._data_b):
             shapes.append(cv.Text(
                 x=max(pl + 8, W / 2 - 38), y=max(pt + 8, H / 2 - 8),
                 value=tr("WAITING FOR TRAFFIC"),
-                style=ft.TextStyle(size=10, color=MUTED),
+                style=ft.TextStyle(size=10, color=_role("muted")),
             ))
 
         return shapes
@@ -181,6 +222,10 @@ class SparklineCanvas:
 
     def update_data(self, data: list):
         self._data = list(data)[-self._n:]
+        self._canvas.shapes = self._build_shapes()
+
+    def recolor(self, mapping: dict) -> None:
+        self._color = _remap(self._color, mapping)
         self._canvas.shapes = self._build_shapes()
 
     def _build_shapes(self) -> list:
@@ -241,6 +286,11 @@ class BarChartCanvas:
         if self._canvas:
             self._canvas.shapes = self._build_shapes()
 
+    def recolor(self, mapping: dict) -> None:
+        self._colors = [_remap(color, mapping) for color in self._colors]
+        if self._canvas:
+            self._canvas.shapes = self._build_shapes()
+
     def resize(self, width: float, height: float) -> None:
         """Resize both the container and the canvas coordinate system."""
         self.W = max(240.0, float(width))
@@ -268,10 +318,10 @@ class BarChartCanvas:
         for k in range(1, 4):
             y = pt + ch * (1 - k / 3)
             shapes.append(cv.Line(pl, y, W - pr, y,
-                                  paint=ft.Paint(color=_rgba(BORDER, 0.5), stroke_width=0.4)))
+                                  paint=ft.Paint(color=_rgba(_role("border"), 0.5), stroke_width=0.4)))
             shapes.append(cv.Text(x=2, y=y - 7,
                                   value=f"{int(max_v * k / 3)}",
-                                  style=ft.TextStyle(size=9, color=MUTED)))
+                                  style=ft.TextStyle(size=9, color=_role("muted"))))
 
         # Bars
         for i, (lbl, clr, val) in enumerate(zip(self._labels, self._colors, self._values)):
@@ -305,7 +355,7 @@ class BarChartCanvas:
                 x=bx + bar_w / 2 - len(lbl) * 3.2,
                 y=pt + ch + 5,
                 value=lbl,
-                style=ft.TextStyle(size=9, color=DIM),
+                style=ft.TextStyle(size=9, color=_role("dim")),
             ))
             # Value
             if val > 0:
@@ -318,9 +368,9 @@ class BarChartCanvas:
 
         # Axes
         shapes.append(cv.Line(pl, pt, pl, pt + ch,
-                              paint=ft.Paint(color=BORDER, stroke_width=1)))
+                              paint=ft.Paint(color=_role("border"), stroke_width=1)))
         shapes.append(cv.Line(pl, pt + ch, W - pr, pt + ch,
-                              paint=ft.Paint(color=BORDER, stroke_width=1)))
+                              paint=ft.Paint(color=_role("border"), stroke_width=1)))
         return shapes
 
     # widget is built in __init__, no build() needed
@@ -342,6 +392,12 @@ class PieChartCanvas:
 
     def update_data(self, sections: list):
         self._sections = sections
+        if self._canvas:
+            self._canvas.shapes = self._build_shapes()
+
+    def recolor(self, mapping: dict) -> None:
+        self._sections = [(label, value, _remap(color, mapping))
+                          for label, value, color in self._sections]
         if self._canvas:
             self._canvas.shapes = self._build_shapes()
 
@@ -370,13 +426,13 @@ class PieChartCanvas:
                 cv.Circle(
                     cx, cy, r_outer,
                     paint=ft.Paint(
-                        color=BORDER, stroke_width=12,
+                        color=_role("border"), stroke_width=12,
                         style=ft.PaintingStyle.STROKE,
                     ),
                 ),
                 cv.Text(
                     x=cx - 23, y=cy - 7, value=tr("NO DATA"),
-                    style=ft.TextStyle(size=10, color=MUTED),
+                    style=ft.TextStyle(size=10, color=_role("muted")),
                 ),
             ])
             return shapes
@@ -422,7 +478,7 @@ class PieChartCanvas:
             shapes.append(cv.Path(
                 elements=elements,
                 paint=ft.Paint(
-                    color=BG, stroke_width=2,
+                    color=_role("bg"), stroke_width=2,
                     style=ft.PaintingStyle.STROKE,
                 ),
             ))
@@ -452,7 +508,7 @@ class PieChartCanvas:
             el.append(cv.Path.LineTo(*p))
         el.append(cv.Path.Close())
         shapes.append(cv.Path(elements=el,
-                              paint=ft.Paint(color=CARD, style=ft.PaintingStyle.FILL)))
+                              paint=ft.Paint(color=_role("card"), style=ft.PaintingStyle.FILL)))
 
         return shapes
 

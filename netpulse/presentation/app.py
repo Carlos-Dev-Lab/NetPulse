@@ -9,22 +9,28 @@ import os
 import flet as ft
 
 from netpulse.config import (
-    DEFAULT_DATABASE_PATH, ensure_runtime_directories, load_appearance, load_language,
-    save_appearance, save_language,
+    DEFAULT_DATABASE_PATH, ensure_runtime_directories, load_alerts,
+    load_appearance, load_interface, load_language, load_retention_days,
+    save_appearance, save_interface, save_language,
 )
 from netpulse.domain.state import AppState
+from netpulse.logging_setup import configure_logging
 from netpulse.infrastructure.database import DB
 from netpulse.infrastructure.nmap_scanner import NmapScanner
 from netpulse.infrastructure.sniffer import Sniffer, list_interfaces
 from netpulse.services.ip_info import geo_cache
+from .charts import apply_palette as apply_chart_palette
 from .theme import (
-    AMBER, BG, BORDER, CARD, CYAN, GREEN, MUTED, RED, SURFACE, TEXT,
-    appearance_palette, make_theme, recolor_tree, selectable_content, tint,
+    AMBER, BG, BORDER, CARD, CYAN, GREEN, MUTED, PALETTE_ROLES, RED, SURFACE, TEXT,
+    accented, appearance_palette, apply_accent, clear_accent_registry,
+    make_theme, recolor_tree, selectable_content, set_active_palette,
+    theme_mode, tint,
 )
 from .views import (
     ChartsView, DashboardView, HistoryView, LocalPortsView, NetworkView,
     PacketsView, ProcessView, SettingsView,
 )
+from .dialogs import close_dialog, open_dialog
 from .i18n import set_language, translate_tree
 
 
@@ -42,11 +48,15 @@ def main(page: ft.Page):
         "standard": ft.VisualDensity.STANDARD,
         "comfortable": ft.VisualDensity.COMFORTABLE,
     }
+    clear_accent_registry()
+    set_active_palette(current_palette[0])
+    apply_chart_palette(current_palette[0])
     page.title      = "NetPulse — Network Analyzer"
     page.bgcolor    = current_palette[0]["bg"]
     page.theme      = make_theme(current_palette[0]["accent"], current_palette[0]["surface"],
-                                 densities[appearance["density"]])
-    page.theme_mode = ft.ThemeMode.DARK
+                                 densities[appearance["density"]],
+                                 palette=current_palette[0])
+    page.theme_mode = theme_mode(current_palette[0])
     page.padding    = 0
     # Flet uses logical pixels and Windows applies DPI scaling afterwards.
     # 1080x660 remains fully visible on a 1707x1067 desktop at 150% scaling,
@@ -55,7 +65,7 @@ def main(page: ft.Page):
     page.window.height     = 660
     page.window.min_width  = 900
     page.window.min_height = 620
-    page.window.bgcolor    = BG
+    page.window.bgcolor    = current_palette[0]["bg"]
     # NetPulse is an operations workspace: start maximized so analytical views
     # use the available desktop instead of booting directly into compact mode.
     # The dimensions above remain the safe restored-window size.
@@ -63,10 +73,24 @@ def main(page: ft.Page):
 
     # ── Core objects ───────────────────────────────────────────────────
     ensure_runtime_directories()
+    configure_logging()
     state   = AppState(ip_enricher=geo_cache)
+    # Capture preferences survive restarts so an operator does not have to
+    # re-select the adapter and re-enter thresholds on every launch.
+    state.interface = load_interface()
+    persisted_alerts = load_alerts()
+    state.alert_bw_thresh = persisted_alerts["bandwidth_kbps"]
+    state.alert_pps_thresh = persisted_alerts["packets_per_second"]
     sniffer = Sniffer()
     nmap_scanner = NmapScanner()
     db      = DB(DEFAULT_DATABASE_PATH)
+    retention_days = load_retention_days()
+    try:
+        removed = db.purge_old_sessions(retention_days)
+        if removed:
+            logger.info("Removed %d capture sessions beyond retention", removed)
+    except Exception:
+        logger.exception("Could not apply the capture history retention policy")
     _page_ref = [page]  # mutable ref for sub-views
     _closing = [False]
     language = [load_language()]
@@ -90,6 +114,7 @@ def main(page: ft.Page):
             pass
 
     def on_appearance_change(theme_name: str, accent_name: str, density_name: str):
+        old_palette = current_palette[0]
         new_palette = appearance_palette(theme_name, accent_name)
         save_appearance(theme_name, accent_name, density_name)
         page.bgcolor = new_palette["bg"]
@@ -97,14 +122,51 @@ def main(page: ft.Page):
         page.theme = make_theme(
             new_palette["accent"], new_palette["surface"],
             densities.get(density_name, ft.VisualDensity.STANDARD),
+            palette=new_palette,
         )
+        # Light themes need the matching brightness, otherwise Flet keeps
+        # painting its own dark chrome behind the recoloured controls.
+        page.theme_mode = theme_mode(new_palette)
+        set_active_palette(new_palette)
+        apply_chart_palette(new_palette)
         try:
-            recolor_tree(app_layout, current_palette[0], new_palette)
-            main_content.bgcolor = new_palette["bg"]
+            _repaint(old_palette, new_palette)
         except NameError:
             pass
         current_palette[0] = new_palette
         page.update()
+
+    def _repaint(old_palette: dict, new_palette: dict) -> None:
+        """Repaint the whole workspace, not only the section on screen.
+
+        Flet only reaches the mounted wrapper through ``main_content``; the other
+        seven sections live in ``wrappers`` and would keep the previous palette
+        until they were rebuilt. One shared ``seen`` set walks every root exactly
+        once.
+        """
+        seen: set = set()
+        recolor_tree(app_layout, old_palette, new_palette, seen)
+        for wrapper in wrappers:
+            recolor_tree(wrapper, old_palette, new_palette, seen)
+        main_content.bgcolor = new_palette["bg"]
+        apply_accent(new_palette["accent"])
+        _recolor_charts(old_palette, new_palette)
+
+    def _recolor_charts(old_palette: dict, new_palette: dict) -> None:
+        """Canvases redraw from Python, so their series colours are swapped here."""
+        mapping = {
+            old_palette[role].upper(): new_palette[role]
+            for role in PALETTE_ROLES + ("accent",)
+            if role in old_palette and role in new_palette
+            and old_palette[role] != new_palette[role]
+        }
+        if not mapping:
+            return
+        for chart in (dash.line_chart, dash.pie_chart, dash.spark_cpu, dash.spark_ram,
+                      chart_v.line_chart, chart_v.bar_chart):
+            recolor = getattr(chart, "recolor", None)
+            if recolor is not None:
+                recolor(mapping)
 
     # ── Views ──────────────────────────────────────────────────────────
     dash    = DashboardView(state)
@@ -119,6 +181,7 @@ def main(page: ft.Page):
     proc_v  = ProcessView(state, _page_ref)
     def on_interface_change(value: str):
         state.interface = value or "All"
+        save_interface(state.interface)
         try:
             if r_iface.current:
                 r_iface.current.value = state.interface
@@ -130,6 +193,7 @@ def main(page: ft.Page):
         state, language[0], on_language_change,
         appearance=appearance, on_appearance_change=on_appearance_change,
         on_interface_change=on_interface_change,
+        alerts=persisted_alerts, retention_days=retention_days,
     )
 
     try:
@@ -164,35 +228,37 @@ def main(page: ft.Page):
     r_sb_sess = ft.Ref[ft.Text]()
     r_sb_pkts = ft.Ref[ft.Text]()
     r_sb_time  = ft.Ref[ft.Text]()
+    r_sb_drop  = ft.Ref[ft.Text]()
 
     # ── Capture control ────────────────────────────────────────────────
     def _show_alert_dialog(title: str, msg: str):
-        def close(e):
-            page.dialog.open = False
-            page.update()
-        page.dialog = ft.AlertDialog(
+        def close(e=None):
+            close_dialog(page)
+        dialog = ft.AlertDialog(
             modal=False,
             title=ft.Text(title, color=AMBER),
             content=ft.Text(msg, color=TEXT, size=12),
             actions=[ft.TextButton("OK", on_click=close)],
             bgcolor=CARD,
         )
-        page.dialog.open = True
-        page.update()
+        translate_tree(dialog, language[0])
+        open_dialog(page, dialog)
 
     def _err(msg: str):
-        def close(e):
-            page.dialog.open = False
-            page.update()
-        page.dialog = ft.AlertDialog(
+        def close(e=None):
+            close_dialog(page)
+        dialog = ft.AlertDialog(
             modal=True,
-            title=ft.Text("⚠  Error", color=RED),
+            title=ft.Row([
+                ft.Icon(ft.Icons.ERROR_OUTLINE_ROUNDED, color=RED, size=18),
+                ft.Text("Error", color=RED, weight=ft.FontWeight.W_700),
+            ], spacing=8, tight=True),
             content=ft.Text(msg, color=TEXT, size=12, selectable=True),
             actions=[ft.TextButton("OK", on_click=close)],
             bgcolor=CARD,
         )
-        page.dialog.open = True
-        page.update()
+        translate_tree(dialog, language[0])
+        open_dialog(page, dialog)
 
     def _set_header(capturing: bool):
         if r_dot.current:
@@ -310,7 +376,12 @@ def main(page: ft.Page):
         if r_section.current:
             r_section.current.value = section_names[idx]
             translate_tree(r_section.current, language[0])
-            r_section.current.update()
+            # A rail change can arrive before Flet has finished mounting the
+            # header; the page update below still repaints the new value.
+            try:
+                r_section.current.update()
+            except (RuntimeError, AssertionError):
+                pass
         translate_tree(wrappers[idx], language[0])
         try:
             main_content.update()
@@ -346,7 +417,7 @@ def main(page: ft.Page):
         min_width=104,
         min_extended_width=180,
         bgcolor=SURFACE,
-        indicator_color=tint(CYAN, .19),
+        indicator_color=tint(CYAN, .19),   # registered below as chrome
         indicator_shape=ft.RoundedRectangleBorder(radius=12),
         destinations=[
             nav_dest(ft.Icons.DASHBOARD_OUTLINED, ft.Icons.DASHBOARD_ROUNDED, "Overview"),
@@ -361,6 +432,7 @@ def main(page: ft.Page):
         ],
         on_change=on_nav,
     )
+    accented(nav, "indicator_color", .19)
 
     # ── Header ─────────────────────────────────────────────────────────
     r_section = ft.Ref[ft.Text]()
@@ -380,13 +452,17 @@ def main(page: ft.Page):
     ], spacing=10)
 
     header_brand = ft.Row([
-        ft.Container(
-            ft.Icon(ft.Icons.RADAR_ROUNDED, color=CYAN, size=24),
-            width=38, height=38, alignment=ft.Alignment.CENTER,
-            bgcolor=tint(CYAN, .07), border_radius=11,
-            border=ft.Border.all(1, tint(CYAN, .21)),
+        accented(
+            ft.Container(
+                accented(ft.Icon(ft.Icons.RADAR_ROUNDED, color=CYAN, size=24)),
+                width=38, height=38, alignment=ft.Alignment.CENTER,
+                bgcolor=tint(CYAN, .07), border_radius=11,
+                border=ft.Border.all(1, tint(CYAN, .21)),
+            ),
+            "bgcolor", .07,
         ),
-        ft.Text("NETPULSE", size=10, color=CYAN, weight=ft.FontWeight.W_700),
+        accented(ft.Text("NETPULSE", size=10, color=CYAN,
+                         weight=ft.FontWeight.W_700)),
         ft.VerticalDivider(color=BORDER, width=12, thickness=1),
     ], spacing=7, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
@@ -413,6 +489,7 @@ def main(page: ft.Page):
         focused_border_color=CYAN,
         tooltip="Capture interface",
     )
+    accented(interface_selector, "focused_border_color")
 
     header = ft.Container(
         content=ft.Row([
@@ -444,7 +521,7 @@ def main(page: ft.Page):
 
     # ── Status bar ─────────────────────────────────────────────────────
     status_refresh = ft.Row([
-        ft.ProgressRing(width=10, height=10, stroke_width=1.5, color=CYAN),
+        accented(ft.ProgressRing(width=10, height=10, stroke_width=1.5, color=CYAN)),
         ft.Text("200ms refresh", size=10, color=MUTED),
     ], spacing=8)
     status_database = ft.Row([
@@ -463,6 +540,9 @@ def main(page: ft.Page):
             ft.Icon(ft.Icons.TIMER_OUTLINED, color=MUTED, size=12),
             ft.Text(ref=r_sb_time, value="00:00:00", size=11, color=MUTED,
                     font_family="monospace"),
+            ft.VerticalDivider(color=BORDER, width=16, thickness=1),
+            ft.Text(ref=r_sb_drop, value="0 dropped", size=11, color=MUTED,
+                    tooltip="Packets discarded because the capture queue was full"),
             ft.Container(expand=True),
             status_refresh,
             ft.Container(width=8),
@@ -511,7 +591,9 @@ def main(page: ft.Page):
     ], spacing=0, expand=True)
     default_palette = appearance_palette("netpulse", "cyan")
     if current_palette[0] != default_palette:
-        recolor_tree(app_layout, default_palette, current_palette[0])
+        _repaint(default_palette, current_palette[0])
+    else:
+        apply_accent(current_palette[0]["accent"])
     page.add(app_layout)
     translate_tree(app_layout, language[0])
     page.update()
@@ -625,6 +707,12 @@ def main(page: ft.Page):
                         r_sb_time.current.value = f"{h:02d}:{m:02d}:{s:02d}"
                     else:
                         r_sb_time.current.value = "00:00:00"
+
+                # Dropped packets warn that the displayed rates are incomplete.
+                if r_sb_drop.current:
+                    dropped = sniffer.dropped
+                    r_sb_drop.current.value = f"{dropped:,} dropped"
+                    r_sb_drop.current.color = AMBER if dropped else MUTED
 
                 # 5. Poll CPU/RAM every ~1s (5 ticks)
                 if _tick % DATABASE_FLUSH_TICKS == 0:

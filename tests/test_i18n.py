@@ -28,9 +28,17 @@ class I18nTests(unittest.TestCase):
             tr("86/100 · GOOD · 14 points deducted"),
             "86/100 · BUENA · 14 puntos descontados",
         )
+        self.assertEqual(tr("DATABASE  ( SQLite )"), "BASE DE DATOS  ( SQLite )")
         self.assertEqual(
-            tr("netpulse.db  ·  same folder as main.py"),
-            "netpulse.db  ·  carpeta de datos de la aplicación",
+            tr("Capture history retention"), "Retención del historial de capturas",
+        )
+        self.assertEqual(
+            tr("Keeping every capture session."),
+            "Se conservan todas las sesiones de captura.",
+        )
+        self.assertEqual(
+            tr("Run as Administrator  →  scripts/start.bat"),
+            "Ejecutar como administrador  →  scripts/start.bat",
         )
 
     def test_language_switch_is_reversible(self):

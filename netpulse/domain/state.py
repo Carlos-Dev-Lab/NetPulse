@@ -2,7 +2,7 @@
 
 from collections import defaultdict, deque
 from datetime import datetime
-from typing import Dict, List, Protocol
+from typing import Dict, List, Optional, Protocol
 
 from .models import Packet
 
@@ -236,10 +236,3 @@ class AppState:
         self.app_traffic.clear()
         self._alert_bw_fired = False
         self._alert_pps_fired = False
-
-
-# ════════════════════════════════════════════════════════════════════════
-# VIEWS
-# ════════════════════════════════════════════════════════════════════════
-
-# ── 1. DASHBOARD ────────────────────────────────────────────────────────

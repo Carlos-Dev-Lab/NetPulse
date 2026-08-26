@@ -12,7 +12,10 @@ from typing import Dict
 import flet as ft
 
 from netpulse.domain.state import AppState
-from netpulse.config import PROJECT_ROOT
+from netpulse.config import (
+    DEFAULT_DATABASE_PATH, PROJECT_ROOT, load_alerts, load_retention_days,
+    save_alerts, save_retention_days,
+)
 from netpulse.infrastructure.database import DB
 from netpulse.infrastructure.nmap_scanner import (
     NmapCancelledError,
@@ -35,6 +38,7 @@ from netpulse.services.performance import (
 )
 from netpulse.services.reporting import export_scan_reports
 from .charts import BarChartCanvas, LineChartCanvas, PieChartCanvas, SparklineCanvas
+from .dialogs import close_dialog, open_dialog
 from .i18n import get_language, tr, translate_tree
 from .theme import (
     AMBER, BLUE, BORDER, CARD, CYAN, DIM, GREEN, MUTED, PROTO_COLORS,
@@ -86,8 +90,7 @@ class DashboardView:
                     ], spacing=2),
                 ], spacing=12),
                 ft.Text(ref=ref_sub, value="", size=11, color=MUTED),
-            ], spacing=8),
-            glow=color,
+            ], spacing=8)
         )
 
     def _sys_tile(self, title, ref_val, ref_bar, ref_sub, spark_widget, color, icon):
@@ -108,8 +111,7 @@ class DashboardView:
                 ft.ProgressBar(ref=ref_bar, value=0, color=color,
                                bgcolor=tint(color, .13), height=4, border_radius=2),
                 ft.Text(ref=ref_sub, value="", size=10, color=MUTED),
-            ], spacing=6),
-            glow=color,
+            ], spacing=6)
         )
 
     def build(self):
@@ -135,7 +137,7 @@ class DashboardView:
                         ], spacing=2),
                     ], spacing=12),
                     ft.Text("↓ in  /  ↑ out peak", size=11, color=MUTED),
-                ], spacing=8), glow=AMBER),
+                ], spacing=8)),
             ], spacing=12, wrap=True, run_spacing=12,
             vertical_alignment=ft.CrossAxisAlignment.START)
         self._metric_cards = metric_row.controls
@@ -180,7 +182,7 @@ class DashboardView:
 
         detail_row = ft.Row([
                 card(ft.Column([
-                    section_title("🌐  TOP CONNECTIONS"),
+                    section_title("TOP CONNECTIONS", icon=ft.Icons.PUBLIC_ROUNDED, color=CYAN),
                     ft.Divider(color=BORDER, height=6),
                     ft.Column(ref=self.r_ips, spacing=6, expand=True,
                               scroll=ft.ScrollMode.AUTO,
@@ -188,7 +190,7 @@ class DashboardView:
                 ], spacing=10, expand=True)),
 
                 card(ft.Column([
-                    section_title("⚡  LIVE PACKET FEED"),
+                    section_title("LIVE PACKET FEED", icon=ft.Icons.BOLT_ROUNDED, color=AMBER),
                     ft.Divider(color=BORDER, height=6),
                     ft.Column(ref=self.r_feed, spacing=4, expand=True,
                               scroll=ft.ScrollMode.AUTO,
@@ -439,7 +441,14 @@ class NetworkView:
 
     @staticmethod
     def _risk_color(level: str) -> str:
-        return RED if level == "high" else AMBER if level == "medium" else GREEN
+        """Colour a risk level, leaving the benign case neutral.
+
+        "Low" used to be green, so a host with ninety uneventful ports produced
+        ninety green rows and the two that needed attention had to compete with
+        them. Green is reserved for an outcome someone achieved - a finding
+        resolved, a check that passed - not for the absence of a problem.
+        """
+        return RED if level == "high" else AMBER if level == "medium" else MUTED
 
     def build(self):
         def on_scan(e):
@@ -483,8 +492,7 @@ class NetworkView:
                         ft.Text(ref=ref, value="0", size=24, color=color,
                                 weight=ft.FontWeight.BOLD, font_family="monospace"),
                     ], spacing=2),
-                ], spacing=10),
-                glow=color, padding=14,
+                ], spacing=10), padding=14,
             )
 
         def tab_section(title, subtitle, icon, color, body):
@@ -897,7 +905,7 @@ class NetworkView:
         controls = []
         for listener in listeners:
             color = self._risk_color(listener.risk_level)
-            exposure_color = GREEN if listener.exposure == "local" else AMBER
+            exposure_color = MUTED if listener.exposure == "local" else AMBER
             controls.append(ft.Container(
                 content=ft.Row([
                     ft.Container(
@@ -1017,7 +1025,7 @@ class NetworkView:
         page = self._page[0]
 
         def close(e=None):
-            page.pop_dialog()
+            close_dialog(page)
 
         def save(e=None):
             try:
@@ -1040,7 +1048,7 @@ class NetworkView:
                      ft.Button(content="Save profile", on_click=save)],
         )
         translate_tree(dialog, get_language())
-        page.show_dialog(dialog)
+        open_dialog(page, dialog)
 
     def _show_schedule_dialog(self):
         if not self._page or not self._page[0]:
@@ -1061,7 +1069,7 @@ class NetworkView:
         page = self._page[0]
 
         def close(e=None):
-            page.pop_dialog()
+            close_dialog(page)
 
         def save(e=None):
             self.db.save_scan_schedule(
@@ -1080,7 +1088,7 @@ class NetworkView:
                      ft.Button(content="Create schedule", on_click=save)],
         )
         translate_tree(dialog, get_language())
-        page.show_dialog(dialog)
+        open_dialog(page, dialog)
 
     async def _execute_scan(self, target: str, profile: str):
         previous = self.db.get_latest_network_scan(target)
@@ -1513,7 +1521,7 @@ class NetworkView:
                        RED if comparison.risk_delta > 0 else GREEN),
             ], spacing=8, wrap=True, run_spacing=8),
             ft.Column(change_controls or [
-                ft.Text("No topology or port changes detected.", color=GREEN, size=11)
+                ft.Text("No topology or port changes detected.", color=MUTED, size=11)
             ], spacing=6),
         ]
         translate_tree(self.r_comparison.current, get_language())
@@ -1526,9 +1534,9 @@ class NetworkView:
         page = self._page[0]
 
         def close(e=None):
-            page.pop_dialog()
+            close_dialog(page)
 
-        page.dialog = ft.AlertDialog(
+        dialog = ft.AlertDialog(
             modal=True,
             title=ft.Row([
                 ft.Icon(ft.Icons.SECURITY_ROUNDED, color=color),
@@ -1552,9 +1560,8 @@ class NetworkView:
             ], spacing=8), width=520),
             actions=[ft.TextButton("Close", on_click=close)],
         )
-        translate_tree(page.dialog, get_language())
-        page.dialog.open = True
-        page.update()
+        translate_tree(dialog, get_language())
+        open_dialog(page, dialog)
 
     def _show_global_search(self, query: str):
         if not query or not self._page or not self._page[0]:
@@ -1591,7 +1598,7 @@ class NetworkView:
         page = self._page[0]
 
         def close(e=None):
-            page.pop_dialog()
+            close_dialog(page)
 
         dialog = ft.AlertDialog(
             modal=True,
@@ -1604,7 +1611,7 @@ class NetworkView:
             actions=[ft.TextButton("Close", on_click=close)],
         )
         translate_tree(dialog, get_language())
-        page.show_dialog(dialog)
+        open_dialog(page, dialog)
 
     async def _export_current_reports(self):
         if not self._current_scan or not self._page or not self._page[0]:
@@ -1630,10 +1637,9 @@ class NetworkView:
             page = self._page[0]
 
             def close(e=None):
-                page.dialog.open = False
-                page.update()
+                close_dialog(page)
 
-            page.dialog = ft.AlertDialog(
+            dialog = ft.AlertDialog(
                 title=ft.Text("Reports exported"),
                 content=ft.Column([
                     ft.Text(f"{kind.upper()}: {path}", selectable=True, size=10,
@@ -1642,9 +1648,8 @@ class NetworkView:
                 ], spacing=7, tight=True),
                 actions=[ft.TextButton("Close", on_click=close)],
             )
-            translate_tree(page.dialog, get_language())
-            page.dialog.open = True
-            page.update()
+            translate_tree(dialog, get_language())
+            open_dialog(page, dialog)
         except Exception as exc:
             self.r_status.current.value = f"Report export failed: {exc}"
             self.r_status.current.color = RED
@@ -1873,7 +1878,7 @@ class NetworkView:
         page = self._page[0]
 
         def close(e=None):
-            page.pop_dialog()
+            close_dialog(page)
             page.update()
 
         def save(e=None):
@@ -1963,7 +1968,7 @@ class NetworkView:
             actions_padding=ft.padding.Padding.only(left=18, right=18, bottom=14),
         )
         translate_tree(dialog, get_language())
-        page.show_dialog(dialog)
+        open_dialog(page, dialog)
 
     def _select_host(self, address: str):
         if not self._current_scan or not address:
@@ -2003,7 +2008,7 @@ class NetworkView:
         page = self._page[0]
 
         def close(_=None):
-            page.pop_dialog()
+            close_dialog(page)
 
         host = next((item for item in self._current_scan.hosts
                      if item.address == address), None)
@@ -2104,7 +2109,7 @@ class NetworkView:
             actions_alignment=ft.MainAxisAlignment.END,
         )
         translate_tree(dialog, get_language())
-        page.show_dialog(dialog)
+        open_dialog(page, dialog)
 
     def _render_host_alerts(self, address: str):
         """Refreshes the legacy alert target when it is mounted."""
@@ -2302,7 +2307,7 @@ class LocalPortsView:
                     ft.Text(ref=ref, value="0", color=color, size=22,
                             weight=ft.FontWeight.W_700, font_family="monospace"),
                 ], spacing=1),
-            ], spacing=9), padding=12, glow=color)
+            ], spacing=9), padding=12)
 
         self._summary_cards = [
             metric("LISTENING PORTS", self.r_total, CYAN, ft.Icons.SENSORS_ROUNDED),
@@ -2488,7 +2493,8 @@ class LocalPortsView:
         exposure_labels = {"local": "This computer only",
                            "all_interfaces": "All network interfaces",
                            "network_interface": "Specific network interface"}
-        color = RED if item.risk_level == "high" else AMBER if item.risk_level == "medium" else GREEN
+        color = (RED if item.risk_level == "high"
+                 else AMBER if item.risk_level == "medium" else MUTED)
         return ft.Container(
             content=ft.ListTile(
                 leading=ft.Container(
@@ -2525,7 +2531,8 @@ class LocalPortsView:
                            "network_interface": "Specific network interface"}
         controls = []
         for item in self._filtered:
-            color = RED if item.risk_level == "high" else AMBER if item.risk_level == "medium" else GREEN
+            color = (RED if item.risk_level == "high"
+                     else AMBER if item.risk_level == "medium" else MUTED)
             controls.append(ft.Container(
                 content=ft.ListTile(
                     leading=ft.Container(
@@ -2553,7 +2560,7 @@ class LocalPortsView:
                 border_radius=8,
             ))
         def close(_=None):
-            page.pop_dialog()
+            close_dialog(page)
             page.update()
         dialog = ft.AlertDialog(
             modal=True,
@@ -2573,7 +2580,7 @@ class LocalPortsView:
             bgcolor=SURFACE, barrier_color="#66000000",
         )
         translate_tree(dialog, get_language())
-        page.show_dialog(dialog)
+        open_dialog(page, dialog)
 
     def on_mount(self):
         # During the initial Flet mount the page is still composing its first
@@ -2691,7 +2698,7 @@ class PacketsView:
                         style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
                     ),
                     ft.Button(
-                        content="📥 Export CSV", on_click=on_export,
+                        content="Export CSV", icon=ft.Icons.FILE_DOWNLOAD_ROUNDED, on_click=on_export,
             bgcolor=tint(PURPLE, .19), color=PURPLE,
                         style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
                     ),
@@ -2922,7 +2929,7 @@ class ChartsView:
                 ft.Text(label, size=9, color=DIM, weight=ft.FontWeight.W_600),
                 ft.Text(ref=ref, value="Not measured", size=22, color=color,
                         weight=ft.FontWeight.BOLD, font_family="monospace"),
-            ], spacing=7), glow=color, height=88)
+            ], spacing=7), height=88)
             self._cards.append(control)
             return control
 
@@ -2956,7 +2963,7 @@ class ChartsView:
                 ft.Text("Internet:", color=MUTED, size=10),
                 ft.Text(ref=self.r_internet, value="Not checked", color=TEXT, size=10),
             ], spacing=8, wrap=True),
-        ], spacing=7), glow=CYAN)
+        ], spacing=7))
         guidance = card(ft.Column([
             section_title("HOW TO INTERPRET THIS CHECK"),
             ft.Text(
@@ -2970,7 +2977,7 @@ class ChartsView:
                 "DNS and Internet checks are reported independently.",
                 color=DIM, size=10,
             ),
-        ], spacing=8), glow=PURPLE)
+        ], spacing=8))
         def capacity_metric(label, value_ref, color, detail_ref=None):
             controls = [
                 ft.Text(label, color=MUTED, size=9, weight=ft.FontWeight.W_600),
@@ -3001,13 +3008,13 @@ class ChartsView:
         capacity_card = card(ft.Column([
             section_title("CAPACITY AND TREND"),
             self._capacity_grid,
-        ], spacing=10, tight=True), glow=GREEN)
+        ], spacing=10, tight=True))
         history_card = card(ft.Column([
             section_title("RECENT QUALITY CHECKS"),
             ft.Column(ref=self.r_history, controls=[
                 ft.Text("No saved quality checks yet.", color=MUTED, size=10)
             ], spacing=5, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
-        ], spacing=8), glow=AMBER)
+        ], spacing=8))
         self._capacity_card = capacity_card
         self._history_card = history_card
         self._refresh_evidence()
@@ -3103,13 +3110,13 @@ class ChartsView:
                         ft.Text(row["gateway"], color=CYAN, size=10,
                                 font_family="monospace", width=120),
                         ft.Text(f"Latencia  {row['latency_ms']:.1f} ms",
-                                color=GREEN if row["latency_ms"] < 100 else AMBER,
+                                color=MUTED if row["latency_ms"] < 100 else AMBER,
                                 size=10, width=145),
                         ft.Text(f"Jitter  {row['jitter_ms']:.1f} ms",
-                                color=GREEN if row["jitter_ms"] < 30 else AMBER,
+                                color=MUTED if row["jitter_ms"] < 30 else AMBER,
                                 size=10, width=130),
                         ft.Text(f"Pérdida  {row['loss_percent']:.0f}%",
-                                color=GREEN if row["loss_percent"] < 5 else AMBER,
+                                color=MUTED if row["loss_percent"] < 5 else AMBER,
                                 size=10, width=115),
                         ft.Text(f"DNS  {row['dns_ms']:.1f} ms" if row["dns_ms"] is not None
                                 else "DNS  no disponible", color=PURPLE, size=10),
@@ -3325,7 +3332,8 @@ class HistoryView:
 class SettingsView:
     def __init__(self, state: AppState, language: str = "en", on_language_change=None,
                  appearance=None, on_appearance_change=None,
-                 on_interface_change=None):
+                 on_interface_change=None, alerts=None, retention_days=None,
+                 on_retention_change=None):
         self.state = state
         self.language = language
         self.on_language_change = on_language_change
@@ -3333,9 +3341,19 @@ class SettingsView:
                                          "density": "standard"}
         self.on_appearance_change = on_appearance_change
         self.on_interface_change = on_interface_change
+        # Thresholds and retention survive restarts, so the fields must show the
+        # persisted values instead of resetting the workspace to zero.
+        self.alerts = alerts if alerts is not None else load_alerts()
+        self.retention_days = (
+            retention_days if retention_days is not None else load_retention_days()
+        )
+        self.on_retention_change = on_retention_change
+        self.state.alert_bw_thresh = self.alerts["bandwidth_kbps"]
+        self.state.alert_pps_thresh = self.alerts["packets_per_second"]
         self.r_bw_thresh   = ft.Ref[ft.TextField]()
         self.r_pps_thresh  = ft.Ref[ft.TextField]()
         self.r_alert_status = ft.Ref[ft.Text]()
+        self.r_retention_status = ft.Ref[ft.Text]()
         self._cards = []
         self._settings_body = None
         self._settings_columns = []
@@ -3345,6 +3363,27 @@ class SettingsView:
         self._alert_fields_row = None
         self._alert_button = None
         self._layout_key = None
+
+    def _alert_summary(self) -> str:
+        """Describe the active thresholds, mirroring what was persisted."""
+        parts = []
+        if self.state.alert_bw_thresh > 0:
+            parts.append(f"BW ≥ {self.state.alert_bw_thresh:.0f} KB/s")
+        if self.state.alert_pps_thresh > 0:
+            parts.append(f"PPS ≥ {self.state.alert_pps_thresh:.0f} pkt/s")
+        if not parts:
+            return tr("⚠️ Alerts disabled (set threshold > 0)")
+        return tr("✅ Alerts active:") + " " + "  |  ".join(parts)
+
+    def _alert_summary_color(self) -> str:
+        active = self.state.alert_bw_thresh > 0 or self.state.alert_pps_thresh > 0
+        return GREEN if active else AMBER
+
+    def _retention_summary(self) -> str:
+        if not self.retention_days:
+            return tr("Keeping every capture session.")
+        return (f"{tr('Sessions older than')} {self.retention_days} "
+                f"{tr('days are removed at startup.')}")
 
     def build(self):
         ifaces = list_interfaces()
@@ -3357,6 +3396,22 @@ class SettingsView:
             if self.on_interface_change:
                 self.on_interface_change(self.state.interface)
 
+        def on_retention(e):
+            try:
+                days = int(e.control.value or 0)
+            except (TypeError, ValueError):
+                days = 0
+            self.retention_days = max(0, days)
+            save_retention_days(self.retention_days)
+            if self.on_retention_change:
+                self.on_retention_change(self.retention_days)
+            if self.r_retention_status.current:
+                self.r_retention_status.current.value = self._retention_summary()
+                try:
+                    self.r_retention_status.current.update()
+                except (RuntimeError, AssertionError):
+                    pass
+
         def on_language(e):
             self.language = e.control.value or "en"
             if self.on_language_change:
@@ -3368,23 +3423,26 @@ class SettingsView:
                 pps = float((self.r_pps_thresh.current.value or "0").strip())
                 self.state.alert_bw_thresh  = max(0.0, bw)
                 self.state.alert_pps_thresh = max(0.0, pps)
+                save_alerts(self.state.alert_bw_thresh, self.state.alert_pps_thresh)
+                self.alerts = {
+                    "bandwidth_kbps": self.state.alert_bw_thresh,
+                    "packets_per_second": self.state.alert_pps_thresh,
+                }
                 if self.r_alert_status.current:
-                    parts = []
-                    if self.state.alert_bw_thresh > 0:
-                        parts.append(f"BW ≥ {self.state.alert_bw_thresh:.0f} KB/s")
-                    if self.state.alert_pps_thresh > 0:
-                        parts.append(f"PPS ≥ {self.state.alert_pps_thresh:.0f} pkt/s")
-                    self.r_alert_status.current.value = (
-                        tr("✅ Alerts active:") + " " + "  |  ".join(parts) if parts
-                        else tr("⚠️ Alerts disabled (set threshold > 0)")
-                    )
-                    self.r_alert_status.current.color = GREEN if parts else AMBER
-                    self.r_alert_status.current.update()
+                    self.r_alert_status.current.value = self._alert_summary()
+                    self.r_alert_status.current.color = self._alert_summary_color()
+                    try:
+                        self.r_alert_status.current.update()
+                    except (RuntimeError, AssertionError):
+                        pass
             except ValueError:
                 if self.r_alert_status.current:
                     self.r_alert_status.current.value = tr("❌ Invalid number")
                     self.r_alert_status.current.color = RED
-                    self.r_alert_status.current.update()
+                    try:
+                        self.r_alert_status.current.update()
+                    except (RuntimeError, AssertionError):
+                        pass
 
         def apply_appearance(e=None):
             if self.on_appearance_change:
@@ -3429,7 +3487,7 @@ class SettingsView:
             border_color=BORDER, focused_border_color=CYAN, text_size=12,
         )
         capture_card = card(ft.Column([
-                section_title("⚙️  CAPTURE SETTINGS"),
+                section_title("CAPTURE SETTINGS", icon=ft.Icons.TUNE_ROUNDED, color=CYAN),
                 ft.Divider(color=BORDER, height=8),
                 self._language_dropdown,
                 ft.Text("Network Interface", size=12, color=DIM, weight=ft.FontWeight.W_500),
@@ -3443,6 +3501,7 @@ class SettingsView:
             options=[ft.DropdownOption(key, tr(label)) for key, label in (
                 ("netpulse", "NetPulse dark"), ("midnight", "Midnight blue"),
                 ("graphite", "Graphite"), ("black", "Pure black"),
+                ("daylight", "Daylight (light)"), ("paper", "Paper (light)"),
             )],
             bgcolor=SURFACE, color=TEXT, border_color=BORDER,
             focused_border_color=PURPLE,
@@ -3450,8 +3509,8 @@ class SettingsView:
         self._accent_dropdown = ft.Dropdown(
             label="Accent color", value=self.appearance["accent"], width=220,
             options=[ft.DropdownOption(key, tr(label)) for key, label in (
-                ("cyan", "Cyan"), ("blue", "Blue"), ("green", "Green"),
-                ("purple", "Purple"), ("amber", "Amber"),
+                ("cyan", "Cyan"), ("blue", "Blue"), ("violet", "Violet"),
+                ("magenta", "Magenta"), ("slate", "Slate"),
             )],
             bgcolor=SURFACE, color=TEXT, border_color=BORDER,
             focused_border_color=PURPLE,
@@ -3466,9 +3525,11 @@ class SettingsView:
             focused_border_color=PURPLE,
         )
         appearance_card = card(ft.Column([
-            section_title("APPEARANCE"),
+            section_title("APPEARANCE", icon=ft.Icons.PALETTE_OUTLINED, color=PURPLE),
             ft.Divider(color=BORDER, height=8),
-            ft.Text("Customize the interface without restarting NetPulse.",
+            ft.Text("Customize the interface without restarting NetPulse. "
+                    "The accent colours the chrome only; green, amber and red "
+                    "stay reserved for status.",
                     color=MUTED, size=11),
             ft.Row([self._theme_dropdown, self._accent_dropdown,
                     self._density_dropdown], spacing=9, wrap=True, run_spacing=9),
@@ -3481,7 +3542,7 @@ class SettingsView:
             ref=self.r_bw_thresh,
             label="Bandwidth threshold (KB/s)",
             hint_text="e.g. 1000  (0 = disabled)",
-            value="0", width=260,
+            value=f"{self.alerts['bandwidth_kbps']:g}", width=260,
             bgcolor=SURFACE, color=TEXT,
             border_color=BORDER, focused_border_color=AMBER,
             cursor_color=AMBER, text_size=12,
@@ -3492,7 +3553,7 @@ class SettingsView:
             ref=self.r_pps_thresh,
             label="Packet rate threshold (pkt/s)",
             hint_text="e.g. 5000  (0 = disabled)",
-            value="0", width=260,
+            value=f"{self.alerts['packets_per_second']:g}", width=260,
             bgcolor=SURFACE, color=TEXT,
             border_color=BORDER, focused_border_color=AMBER,
             cursor_color=AMBER, text_size=12,
@@ -3500,7 +3561,8 @@ class SettingsView:
             keyboard_type=ft.KeyboardType.NUMBER,
         )
         self._alert_button = ft.Button(
-            "💾 Save Alerts", on_click=on_save_alerts,
+            content="Save Alerts", icon=ft.Icons.SAVE_ROUNDED,
+            on_click=on_save_alerts,
             bgcolor=tint(AMBER, .19), color=AMBER,
             style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
         )
@@ -3509,25 +3571,38 @@ class SettingsView:
             spacing=10, wrap=True, run_spacing=10,
         )
         alerts_card = card(ft.Column([
-                section_title("🔔  TRAFFIC ALERTS"),
+                section_title("TRAFFIC ALERTS", icon=ft.Icons.NOTIFICATIONS_ACTIVE_ROUNDED, color=AMBER),
                 ft.Divider(color=BORDER, height=8),
                 ft.Text("Set thresholds to trigger notifications during capture.",
                         size=11, color=MUTED),
                 self._alert_fields_row,
                 self._alert_button,
                 ft.Text(ref=self.r_alert_status,
-                        value="⚠️ Alerts disabled (set threshold > 0)",
-                        size=11, color=AMBER),
+                        value=self._alert_summary(),
+                        size=11, color=self._alert_summary_color()),
             ], spacing=12))
 
+        self._retention_dropdown = ft.Dropdown(
+            label="Capture history retention", value=str(self.retention_days),
+            width=260, on_select=on_retention,
+            options=[ft.DropdownOption(key, tr(label)) for key, label in (
+                ("0", "Keep everything"), ("7", "7 days"), ("30", "30 days"),
+                ("90", "90 days"), ("365", "365 days"),
+            )],
+            bgcolor=SURFACE, color=TEXT, border_color=BORDER,
+            focused_border_color=CYAN, text_size=12,
+        )
         database_card = card(ft.Column([
-                section_title("🗄️  DATABASE  ( SQLite )"),
+                section_title("DATABASE  ( SQLite )", icon=ft.Icons.STORAGE_ROUNDED, color=CYAN),
                 ft.Divider(color=BORDER, height=8),
                 ft.Row([
                     ft.Icon(ft.Icons.STORAGE_ROUNDED, color=CYAN, size=18),
-                    ft.Text("netpulse.db  ·  same folder as main.py",
-                            size=12, color=TEXT),
+                    ft.Text(str(DEFAULT_DATABASE_PATH), size=11, color=TEXT,
+                            selectable=True, expand=True),
                 ], spacing=10),
+                self._retention_dropdown,
+                ft.Text(ref=self.r_retention_status, value=self._retention_summary(),
+                        size=11, color=MUTED),
                 ft.Container(
                     ft.Row([
                         ft.Icon(ft.Icons.INFO_OUTLINE_ROUNDED, color=AMBER, size=14),
@@ -3544,11 +3619,11 @@ class SettingsView:
             ], spacing=12))
 
         requirements_card = card(ft.Column([
-                section_title("⚠️  REQUIREMENTS"),
+                section_title("REQUIREMENTS", icon=ft.Icons.CHECKLIST_ROUNDED, color=AMBER),
                 ft.Divider(color=BORDER, height=8),
                 check_row("Npcap installed  →  npcap.com"),
                 check_row("Python 3.10+"),
-                check_row("Run as Administrator  →  start_admin.bat", AMBER),
+                check_row("Run as Administrator  →  scripts/start.bat", AMBER),
                 check_row("Internet access for IP Geo-lookup (ip-api.com)", CYAN),
             ], spacing=10))
 

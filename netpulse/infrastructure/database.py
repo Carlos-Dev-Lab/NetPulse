@@ -7,7 +7,7 @@ import sqlite3
 import json
 import ipaddress
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Any
 
@@ -17,6 +17,11 @@ from netpulse.domain.network_scan import (
     ScanHost,
     ScanService,
 )
+
+# Bumped whenever a one-time data migration is added below. It is stored in
+# SQLite's own ``user_version`` pragma so the costly backfills run once instead
+# of on every launch.
+SCHEMA_VERSION = 1
 
 # ── Schema ────────────────────────────────────────────────────────────────────
 _SCHEMA = """
@@ -268,6 +273,9 @@ class DB:
         with self._cx() as c:
             c.executescript(_SCHEMA)
             self._migrate_asset_schema(c)
+            version = c.execute("PRAGMA user_version").fetchone()[0]
+            if version >= SCHEMA_VERSION:
+                return
             c.execute(
                 """INSERT OR IGNORE INTO inventory_devices
                    (mac,current_address,detected_name,alias,device_type,owner,
@@ -292,6 +300,7 @@ class DB:
             )
             self._seed_asset_observations(c)
             c.execute("DROP TABLE IF EXISTS device_inventory")
+            c.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     @staticmethod
     def _add_column(c, table: str, definition: str) -> bool:
@@ -363,8 +372,12 @@ class DB:
     # ── Internal ──────────────────────────────────────────────────────────
     @contextmanager
     def _cx(self):
-        conn = sqlite3.connect(str(self.path), check_same_thread=False)
+        conn = sqlite3.connect(str(self.path), check_same_thread=False, timeout=15.0)
         conn.row_factory = sqlite3.Row
+        # Scheduled scans write from worker threads while the 200 ms loop
+        # flushes traffic stats, so waiting beats raising "database is locked".
+        conn.execute("PRAGMA busy_timeout=15000")
+        conn.execute("PRAGMA foreign_keys=ON")
         try:
             yield conn
             conn.commit()
@@ -634,6 +647,38 @@ class DB:
                 "SELECT * FROM sessions ORDER BY start_time DESC LIMIT 100"
             ).fetchall()
             return [dict(r) for r in rows]
+
+    def purge_old_sessions(self, retention_days: int,
+                           now: datetime | None = None) -> int:
+        """Delete capture sessions older than *retention_days*.
+
+        Returns the number of removed sessions. ``0`` days keeps everything, so
+        retention stays opt-in. Child rows are removed first because ``stats``
+        and ``top_ips`` reference ``sessions`` without ``ON DELETE CASCADE``.
+        """
+        if retention_days <= 0:
+            return 0
+        cutoff = ((now or datetime.now()) - timedelta(days=retention_days)).isoformat()
+        with self._cx() as c:
+            stale = [row["id"] for row in c.execute(
+                "SELECT id FROM sessions WHERE start_time < ?", (cutoff,)
+            ).fetchall()]
+            if not stale:
+                return 0
+            placeholders = ",".join("?" * len(stale))
+            c.execute(f"DELETE FROM stats WHERE session_id IN ({placeholders})", stale)
+            c.execute(f"DELETE FROM top_ips WHERE session_id IN ({placeholders})", stale)
+            c.execute(f"DELETE FROM sessions WHERE id IN ({placeholders})", stale)
+            return len(stale)
+
+    def storage_summary(self) -> Dict[str, Any]:
+        """Report on-disk size and row counts used by the settings view."""
+        size = self.path.stat().st_size if self.path.exists() else 0
+        with self._cx() as c:
+            sessions = c.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()["n"]
+            samples = c.execute("SELECT COUNT(*) AS n FROM stats").fetchone()["n"]
+            scans = c.execute("SELECT COUNT(*) AS n FROM network_scans").fetchone()["n"]
+        return {"bytes": size, "sessions": sessions, "samples": samples, "scans": scans}
 
     # ── Stats ─────────────────────────────────────────────────────────────
     def save_stat(self, sid: int, d: Dict[str, int]):

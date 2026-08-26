@@ -134,6 +134,20 @@ class Sniffer:
         self._local: set = local_ips()
         self._worker_thread: Optional[threading.Thread] = None
         self._worker_running = False
+        # Both queues drop their oldest entry when full. Counting those drops is
+        # the only way an operator can tell that the displayed rates are
+        # incomplete rather than simply low.
+        self._dropped = 0
+        self._dropped_lock = threading.Lock()
+
+    @property
+    def dropped(self) -> int:
+        """Packets discarded because a queue was saturated."""
+        return self._dropped
+
+    def _count_drop(self) -> None:
+        with self._dropped_lock:
+            self._dropped += 1
 
     # ── Public ────────────────────────────────────────────────────────────
     @property
@@ -156,6 +170,8 @@ class Sniffer:
             except queue.Empty:
                 break
 
+        with self._dropped_lock:
+            self._dropped = 0
         self._local = local_ips()
         _port_pid_mapper.start()
 
@@ -256,6 +272,7 @@ class Sniffer:
             if self._raw_q.full():          # drop oldest if overflowing
                 try:
                     self._raw_q.get_nowait()
+                    self._count_drop()
                 except queue.Empty:
                     pass
             self._raw_q.put_nowait(pkt)
@@ -277,6 +294,7 @@ class Sniffer:
                 if self._q.full():          # drop oldest if overflowing
                     try:
                         self._q.get_nowait()
+                        self._count_drop()
                     except queue.Empty:
                         pass
                 self._q.put_nowait(p)
